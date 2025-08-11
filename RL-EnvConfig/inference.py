@@ -14,19 +14,19 @@ custom_objects = {
 }
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.normpath(os.path.join(script_dir, "../models/sac_noise_reduction_081125_7am.zip"))
+model_path = os.path.normpath(os.path.join(script_dir, "../models/sac_denoise_framestack_081125_7pm.zip"))
 model = SAC.load(model_path, custom_objects=custom_objects)
 
 # Initialize environment
 env = NoiseReductionEnv()
 
 # Parameters
-window_size = 10
+window_size = 52
 
 BASE_DIR = "/home/nvidia/Projects/ASTRA/ASTRA-GeneralRepo/"
 DATA_DIR = os.path.join(BASE_DIR, "Scripts/SDR/Data/")
 csv_path = os.path.join(DATA_DIR, "signal.csv")
-csv_path = os.path.normpath(os.path.join(script_dir, "../Data/simulated_signal_data.csv"))
+# csv_path = os.path.normpath(os.path.join(script_dir, "../Data/simulated_signal_data.csv")) # for testing
 
 poll_interval = 2      # seconds between polls
 timeout_seconds = 10   # time to wait for new data before exiting
@@ -53,7 +53,7 @@ print("Waiting for data to appear...")
 while (1):
     # Load the latest CSV
     try:
-        df = pd.read_csv(csv_path).head(1000).rename(columns={
+        df = pd.read_csv(csv_path).head(10000).rename(columns={
             'TX Magnitude': 'Noisy Signal',
             'RX Magnitude': 'Clean Signal'
         })

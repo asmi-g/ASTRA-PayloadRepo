@@ -13,7 +13,7 @@ class NoiseReductionEnv(gym.Env):
     """
     metadata = {"render.modes": []}
 
-    def __init__(self, signal_length=1000, window_size=10, training=True, seed=None):
+    def __init__(self, signal_length=1000, window_size=20, training=True, seed=None):
         super().__init__()
         self.window_size = int(window_size)
         self.signal_length = int(signal_length)
@@ -86,7 +86,12 @@ class NoiseReductionEnv(gym.Env):
 
     def _get_state(self, noisy_window):
         feats = self._compute_features(noisy_window)
-        return np.concatenate([noisy_window.astype(np.float32), feats, [np.float32(self.last_threshold)]], axis=0)
+        obs = np.concatenate(
+            [noisy_window.astype(np.float32), feats, [np.float32(self.last_threshold)]],
+            axis=0
+        ).astype(np.float32)
+        obs = np.nan_to_num(obs, nan=0.0, posinf=1e6, neginf=-1e6)
+        return obs
 
     def set_signal_window(self, clean_window, noisy_window):
         # For external (inference) use: set one window only
@@ -99,6 +104,7 @@ class NoiseReductionEnv(gym.Env):
         self.clean = None
         self.noisy = None
         self.t = 0
+        self.s = s
 
     # ---------- signal synthesis ----------
     def _generate_signals(self, n):
@@ -136,43 +142,42 @@ class NoiseReductionEnv(gym.Env):
     def step(self, action):
         # choose correct window source
         if self.clean is not None and self.noisy is not None:
-            # training stream
             c = self.clean[self.t:self.t + self.window_size]
             n = self.noisy[self.t:self.t + self.window_size]
         else:
-            # single window (inference / external feed)
             c = self.clean_window
             n = self.noisy_window
 
         _, reward, _, info = self.denoiser.step(n, action, c)
-
-        # record threshold for state
         self.last_threshold = float(info["threshold_factor"])
 
         if not np.isfinite(reward):
             reward = 0.0
         self.reward_history.append(reward)
 
-        done = False
-        if self.training and (self.clean is not None):
-            # slide one step
+        # --- always advance if we are traversing a full sequence ---
+        if self.clean is not None and self.noisy is not None:
             self.t += 1
-            # plateau stop
-            if len(self.reward_history) >= self.plateau_len:
+
+        done = False
+        if self.clean is not None and self.noisy is not None:
+            # plateau early-stop only when training (optional)
+            if self.training and len(self.reward_history) >= self.plateau_len:
                 if np.std(self.reward_history[-self.plateau_len:]) < self.plateau_std:
                     done = True
-            # or end-of-signal
+
+            # end-of-signal stop for both training and eval
             if self.t + self.window_size >= len(self.noisy):
                 done = True
 
-            # update current window if not done
+            # refresh current window if not done
             if not done:
-                c = self.clean[self.t:self.t + self.window_size]
                 n = self.noisy[self.t:self.t + self.window_size]
-        info["s"] = self.s
-        # next obs is based on current (or last) noisy window
+
+        info['s'] = self.s
         obs = self._get_state(n)
         return obs, float(reward), done, info
+
 
 
 class StatelessDenoisingEnv(gym.Env):
@@ -197,16 +202,13 @@ class StatelessDenoisingEnv(gym.Env):
         w = pywt.Wavelet(self.wavelet)
         max_level = pywt.dwt_max_level(n, w.dec_len)
         lvl = max(1, min(self.level, max_level))
-
-        coeffs = pywt.wavedec(x, self.wavelet, level=lvl, mode='periodization')
+        coeffs = pywt.wavedec(x, self.wavelet, level=lvl, mode="periodization")
 
         sigma = np.median(np.abs(coeffs[-1])) / 0.6745 if coeffs[-1].size else 0.0
-        lam = threshold_factor * sigma * np.sqrt(2.0 * np.log(max(n, 2)))
-
-        cA = coeffs[0]
-        details_thr = [pywt.threshold(c, lam, mode='soft') for c in coeffs[1:]]
-        y = pywt.waverec([cA] + details_thr, self.wavelet, mode='periodization')[:n]
-        # preserve DC
+        lam = threshold_factor * sigma * np.sqrt(2*np.log(max(n,2)))  # universal-like
+        cA, details = coeffs[0], coeffs[1:]
+        details = [pywt.threshold(c, lam, mode="soft") for c in details]
+        y = pywt.waverec([cA] + details, self.wavelet, mode="periodization")[:n]
         y += (np.mean(x) - np.mean(y))
         return np.nan_to_num(y, copy=False)
 
@@ -231,7 +233,7 @@ class StatelessDenoisingEnv(gym.Env):
             snr_gain = snr_filt - snr_raw
 
             mse = np.mean((filtered - clean_window) ** 2)
-            loss = np.log1p(mse)
+            loss = mse/(np.var(clean_window) + 1e-12)
 
             if np.std(clean_window) < 1e-12 or np.std(filtered) < 1e-12:
                 corr = 0.0
