@@ -14,7 +14,7 @@ custom_objects = {
 }
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.normpath(os.path.join(script_dir, "../models/sac_noise_reduction_080725_3am.zip"))
+model_path = os.path.normpath(os.path.join(script_dir, "../models/sac_noise_reduction_081125_7am.zip"))
 model = SAC.load(model_path, custom_objects=custom_objects)
 
 # Initialize environment
@@ -96,10 +96,11 @@ while (1):
         action, _ = model.predict(state, deterministic=True)
 
         next_state, reward, done, info = env.step(action)
+        scale = info["s"]
 
         snr_raw = info["SNR_raw"]
         snr_filtered = info["SNR_filtered"]
-        filtered_signal = info["filtered_signal"]
+        filtered_signal = info["filtered_signal"]*scale
         t_factor = info["threshold_factor"]
 
         rewards.append(reward)

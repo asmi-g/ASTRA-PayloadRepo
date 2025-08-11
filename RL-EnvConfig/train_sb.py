@@ -1,44 +1,65 @@
 # train_noise_reduction.py
 # train_noise_reduction.py
-import time
 import os
+import time
 import numpy as np
 
 from stable_baselines3 import SAC
-from stable_baselines3.common.env_checker import check_env
-from stable_baselines3.common.evaluation import evaluate_policy
-from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback, CallbackList, BaseCallback
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.evaluation import evaluate_policy
+from stable_baselines3.common.callbacks import (
+    EvalCallback,
+    CheckpointCallback,
+    CallbackList,
+    BaseCallback,
+)
+from stable_baselines3.common.env_checker import check_env
 
-from astra_rev1.envs import NoiseReductionEnv
+from astra_rev1.envs import NoiseReductionEnv  # your env file
 
-# -------------------------------
-# Setup
-# -------------------------------
-start_time = time.time()
-seed = 42
-np.random.seed(seed)
+# ---------- Config ----------
+SEED = 42
+TOTAL_TIMESTEPS = 100_000
+LOG_DIR = os.path.join("Training", "Logs")
+MODEL_DIR = "models"
+BEST_DIR = os.path.join(MODEL_DIR, "best_model")
+os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(MODEL_DIR, exist_ok=True)
+os.makedirs(BEST_DIR, exist_ok=True)
+np.random.seed(SEED)
 
-log_path = os.path.join("Training", "Logs")
-model_dir = "models"
-best_model_dir = os.path.join(model_dir, "best_model")
 
-os.makedirs(log_path, exist_ok=True)
-os.makedirs(model_dir, exist_ok=True)
-os.makedirs(best_model_dir, exist_ok=True)
+# ---------- Small wrappers to force training mode on reset ----------
+class TrainResetWrapper(NoiseReductionEnv):
+    """Ensure every SB3 reset() runs the env in training mode (sliding windows)."""
+    def reset(self):
+        # No args because SB3 calls reset() without kwargs. We forward training=True inside.
+        return super().reset(training=True)
 
-# -------------------------------
-# Custom Callback to Log Sample Action
-# -------------------------------
+class EvalResetWrapper(NoiseReductionEnv):
+    """Separate eval env (also sliding). You can switch to training=False to freeze window."""
+    def reset(self):
+        return super().reset(training=True)
+
+
+# ---------- Build envs ----------
+train_env = Monitor(TrainResetWrapper(signal_length=4000, window_size=10, training=True, seed=SEED))
+check_env(train_env, warn=True)
+
+eval_env = Monitor(EvalResetWrapper(signal_length=4000, window_size=10, training=True, seed=SEED + 1))
+
+# ---------- Custom callback: log a sample action ----------
 class LogActionCallback(BaseCallback):
     def __init__(self, verbose=0):
         super().__init__(verbose)
 
     def _on_step(self) -> bool:
+        # Keep training going
         return True
 
     def _on_rollout_end(self) -> None:
         try:
+            # Use the most recent observation seen by the model to get a sample action
             last_obs = self.model._last_obs
             action, _ = self.model.predict(last_obs, deterministic=False)
             self.logger.record("train/sample_action", float(action[0]))
@@ -46,78 +67,68 @@ class LogActionCallback(BaseCallback):
             if self.verbose:
                 print(f"[LogActionCallback] Failed to record action: {e}")
 
-# -------------------------------
-# Initialize Environment
-# -------------------------------
-env = Monitor(NoiseReductionEnv())
-check_env(env, warn=True)
 
-# -------------------------------
-# Create Model
-# -------------------------------
+# ---------- SAC model ----------
 model = SAC(
     policy="MlpPolicy",
-    env=env,
+    env=train_env,
     verbose=1,
-    tensorboard_log=log_path,
-    seed=seed,
-    ent_coef="auto_0.5"
+    tensorboard_log=LOG_DIR,
+    seed=SEED,
+    # Exploration: a bit stronger than default to avoid “extremes only”
+    ent_coef="auto_0.5",
+    # Some stable defaults for this lightweight, stationary task
+    learning_rate=3e-4,
+    buffer_size=100_000,
+    batch_size=256,
+    gamma=0.99,
+    tau=0.005,
+    train_freq=1,        # update every step
+    gradient_steps=2,    # small but steady updates
 )
 
-# -------------------------------
-# Callbacks
-# -------------------------------
+# ---------- Callbacks ----------
 eval_callback = EvalCallback(
-    env,
-    best_model_save_path=best_model_dir,
-    eval_freq=1000,
+    eval_env,
+    best_model_save_path=BEST_DIR,
+    eval_freq=2_000,       # evaluate every N steps
     deterministic=True,
-    render=False
+    render=False,
 )
 
 checkpoint_callback = CheckpointCallback(
-    save_freq=10000,
-    save_path=model_dir,
-    name_prefix="sac_checkpoint"
+    save_freq=25_000,
+    save_path=MODEL_DIR,
+    name_prefix="sac_checkpoint",
 )
 
 log_action_callback = LogActionCallback(verbose=1)
 
-callback = CallbackList([
-    eval_callback,
-    checkpoint_callback,
-    log_action_callback
-])
+callback = CallbackList([eval_callback, checkpoint_callback, log_action_callback])
 
-# -------------------------------
-# Train
-# -------------------------------
-model.learn(total_timesteps=50000, callback=callback)
+# ---------- Train ----------
+start_time = time.time()
+model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=callback)
 
-# -------------------------------
-# Save Model
-# -------------------------------
+# ---------- Save ----------
 model_name = f"sac_noise_reduction_{int(start_time)}"
-model_path = os.path.join(model_dir, model_name)
-model.save(model_path)
-print(f"\n Model saved to: {model_path}")
+save_path = os.path.join(MODEL_DIR, model_name)
+model.save(save_path)
+print(f"\nModel saved to: {save_path}")
 
-# -------------------------------
-# Evaluate
-# -------------------------------
-env.reset()
-mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=10)
-print(f"Final Evaluation: Mean Reward = {mean_reward:.2f} ± {std_reward:.2f}")
+# ---------- Final evaluation ----------
+mean_r, std_r = evaluate_policy(model, eval_env, n_eval_episodes=10)
+print(f"Final Evaluation: Mean Reward = {mean_r:.2f} ± {std_r:.2f}")
 
-episode_rewards = evaluate_policy(model, env, n_eval_episodes=10, return_episode_rewards=True)
-print("Per-Episode Rewards:", episode_rewards)
+# If you also want per-episode rewards:
+ep_rewards = evaluate_policy(model, eval_env, n_eval_episodes=10, return_episode_rewards=True)
+print("Per-episode rewards:", ep_rewards)
 
-# -------------------------------
-# Cleanup
-# -------------------------------
-env.close()
-elapsed_time = time.time() - start_time
-print(f"\n Total Runtime: {elapsed_time:.2f} seconds")
+train_env.close()
+eval_env.close()
+
+elapsed = time.time() - start_time
+print(f"\nTotal runtime: {elapsed:.2f} s")
 
 # 
 # def generate_synthetic_signal(signal_type=None, noise_level=None, length=100):
