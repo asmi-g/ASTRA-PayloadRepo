@@ -6,6 +6,7 @@ from stable_baselines3 import SAC
 from astra_rev1.envs import NoiseReductionEnv
 import os
 import time
+import shutil
 
 # Load SAC model
 custom_objects = {
@@ -16,6 +17,17 @@ custom_objects = {
 script_dir = os.path.dirname(os.path.abspath(__file__))
 model_path = os.path.normpath(os.path.join(script_dir, "../models/sac_noise_reduction_071225_10pm_10k.zip"))
 model = SAC.load(model_path, custom_objects=custom_objects)
+
+SD_RESULTS_PATH = "/media/nvidia/sdcard/ml_results.csv"  # Modify if SD label is different
+
+def save_to_sd(local_path, sd_path):
+    try:
+        os.makedirs(os.path.dirname(sd_path), exist_ok=True)
+        shutil.copy2(local_path, sd_path)
+        print(f"[INFO] Synced {local_path} -> {sd_path}")
+    except Exception as e:
+        print(f"[ERROR] Could not sync to SD card: {e}")
+
 
 # Initialize environment
 env = NoiseReductionEnv()
@@ -162,5 +174,8 @@ env.close()
 # Save results
 os.makedirs("Data", exist_ok=True)
 pd.DataFrame(results_rows).to_csv("Data/results.csv", index=False)
+
+# Sync to SD card
+save_to_sd("Data/results.csv", SD_RESULTS_PATH)
 
 print("Inference complete. Results saved.")

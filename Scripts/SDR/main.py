@@ -51,7 +51,7 @@ print(f"Temp logger script: {TEMP_LOGGER_SCRIPT}")
 CSV_FILE_PATH = os.path.join(DATA_DIR, "signal.csv")
 print(f"CSV file path: {CSV_FILE_PATH}")
 
-SD_FILE_PATH = "/media/nvidia/sdcard/data.csv"
+SD_FILE_PATH = "/media/nvidia/sdcard/sdr_data.csv"
 
 RUNTIME_SECONDS = 10  # duration to run TX/RX per cycle
 
