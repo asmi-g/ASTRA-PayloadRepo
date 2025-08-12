@@ -29,7 +29,7 @@ csv_path = os.path.join(DATA_DIR, "signal.csv")
 #csv_path = os.path.normpath(os.path.join(script_dir, "../Data/simulated_signal_data.csv")) # for testing
 
 poll_interval = 2      # seconds between polls
-timeout_seconds = 10   # time to wait for new data before exiting
+timeout_seconds = 120   # time to wait for new data before exiting
 
 # Tracking
 actions = []
@@ -54,11 +54,12 @@ noisy_signal_data    = []
 filtered_signal_data = []
 
 print("Waiting for data to appear...")
+counter = 0
 
 while (1):
     # Load the latest CSV
     try:
-        df = pd.read_csv(csv_path).tail(5000).rename(columns={
+        df = pd.read_csv(csv_path).rename(columns={
             'TX Magnitude': 'Noisy Signal',
             'RX Magnitude': 'Clean Signal'
         })
@@ -80,6 +81,7 @@ while (1):
             print("No new data detected for timeout period. Exiting.")
             break
         else:
+            print("Waiting for new data...")
             time.sleep(poll_interval)
             continue
 
@@ -125,7 +127,11 @@ while (1):
             noisy_signal_data.append(float(df.iloc[i]["Noisy Signal"]))
             filtered_signal_data.append(float(filt[-1]))
 
-        print(f"Rows {i-window_size, i} | Action: {action} | Reward: {reward:.4f} | SNR Improvement: {snr_improvement[-1]:.2f} | SNR Raw: {snr_raw:.2f} | SNR Filtered: {snr_filtered:.2f} | Done: {done} | filtered signal: {np.mean(filtered_signal_data):.4f} | clean signal: {np.mean(win_clean):.4f} | threshold factor: {t_factor:.4f}")
+        if counter == 1000:
+            counter = 0
+            print(f"Rows {i-window_size, i} | Action: {action} | Reward: {reward:.4f} | SNR Improvement: {snr_improvement[-1]:.2f} | SNR Raw: {snr_raw:.2f} | SNR Filtered: {snr_filtered:.2f} | Done: {done} | filtered signal: {np.mean(filtered_signal):.4f} | clean signal: {np.mean(current_window_clean):.4f} | threshold factor: {t_factor:.4f}")
+        else:
+            counter = counter + 1
 
         results_rows.append({
             "window": f"({i - window_size + 1}, {i})",
@@ -145,12 +151,17 @@ while (1):
         last_processed_index += 1
 
         if done:
-            print(f"Early termination signaled at index {i}.")
-            results_rows.append({"window": "(DONE)", "action": np.nan,
-                                "reward": np.nan, "snr_improvement": np.nan,
-                                "threshold_factor": np.nan})
-            break  # or continue, depending on your env semantics
-    
+            #print(f"Early termination signaled by environment at index {i}.")
+            
+            results_rows.append({
+            "window": f"(DONE)",
+            "action": np.NaN,
+            "reward": np.NaN,
+            "snr_improvement": np.NaN,
+            "threshold_factor": np.NaN
+            })
+            
+
     time.sleep(poll_interval)
 
 env.close()
