@@ -5,6 +5,7 @@ import csv
 import sys
 import os
 import signal
+import shutil
 import platform
 from datetime import datetime
 
@@ -49,6 +50,8 @@ print(f"Temp logger script: {TEMP_LOGGER_SCRIPT}")
 
 CSV_FILE_PATH = os.path.join(DATA_DIR, "signal.csv")
 print(f"CSV file path: {CSV_FILE_PATH}")
+
+SD_FILE_PATH = "/media/nvidia/sdcard/data.csv"
 
 RUNTIME_SECONDS = 10  # duration to run TX/RX per cycle
 
@@ -152,8 +155,6 @@ def terminate_process(proc):
         # Process already exited
         pass
 
-
-
 def save_to_csv(rx_file_path, tx_file_path, csv_file_path):
     rx_data = np.fromfile(open(rx_file_path), dtype=np.complex64)
     tx_data = np.fromfile(open(tx_file_path), dtype=np.complex64)
@@ -181,6 +182,13 @@ def save_to_csv(rx_file_path, tx_file_path, csv_file_path):
                 np.real(rx), np.imag(rx), np.abs(rx)
             ])
 
+def save_to_sd(local_path, sd_path):
+    try:
+        os.makedirs(os.path.dirname(sd_path), exist_ok=True)
+        shutil.copy2(local_path, sd_path)
+        print(f"[INFO] Synced {local_path} -> {sd_path}")
+    except Exception as e:
+        print(f"[ERROR] Could not sync to SD card: {e}")
 
 def SDR_cycle():
     print("[INFO] Checking SDRs before starting TX/RX...")
@@ -212,13 +220,14 @@ def SDR_cycle():
     save_to_csv(os.path.join(DATA_DIR, "rxdata.dat"),
                 os.path.join(DATA_DIR, "txdata.dat"),
                 CSV_FILE_PATH)
+    # UNCOMMENT WHEN SD CARD IS MOUNTED AND NAME IS CONFIRMED
+    save_to_sd(CSV_FILE_PATH, SD_FILE_PATH)
     with open(CSV_FILE_PATH, newline='') as csvfile:
         reader = csv.reader(csvfile)
         row_count = sum(1 for row in reader)
     print(f"CSV has {row_count} rows")
 
     print("Cycle complete.\n")
-
 
 def main():
     # Ensure data dir exists

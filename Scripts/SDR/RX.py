@@ -31,6 +31,7 @@ class RX(gr.top_block):
         # Variables
         ##################################################
         self.samp_rate = samp_rate = 1000000
+        # Data Rate Estimation: 1,000,000 samples/s × 8 bytes = 8 MB/s
         self.center_freq = center_freq = 2400000000
 
         ##################################################
