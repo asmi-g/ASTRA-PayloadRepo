@@ -26,8 +26,17 @@ csv_path = SD_SIGNAL_PATH
 def save_results_direct():
     try:
         os.makedirs(os.path.dirname(SD_RESULTS_PATH), exist_ok=True)
-        pd.DataFrame(results_rows).to_csv(SD_RESULTS_PATH, index=False)
-        print(f"[INFO] Results written directly to {SD_RESULTS_PATH}")
+        write_header = not os.path.exists(SD_RESULTS_PATH)
+
+        df = pd.DataFrame(results_rows)
+        df.to_csv(
+            SD_RESULTS_PATH,
+            mode='a',              # append instead of overwrite
+            header=write_header,   # only write header if file doesn't exist
+            index=False
+        )
+
+        print(f"[INFO] Results appended to {SD_RESULTS_PATH}")
     except Exception as e:
         print(f"[ERROR] Could not sync to SD card: {e}")
 
