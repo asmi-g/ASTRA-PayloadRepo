@@ -229,9 +229,29 @@ def SDR_cycle():
 
     print("Cycle complete.\n")
 
+def idle_countdown(duration_seconds):
+    print(f"[INFO] Idle timer started for {duration_seconds // 60} minutes...")
+    start = time.time()
+    while True:
+        elapsed = time.time() - start
+        remaining = duration_seconds - elapsed
+        if remaining <= 0:
+            print("[INFO] Idle period complete.\n")
+            break
+        mins, secs = divmod(int(remaining), 60)
+        print(f"\r[Idle Timer] {mins:02d}:{secs:02d} remaining...", end="")
+        sys.stdout.flush()
+        
+        # Optional: Print elapsed operation time every 30 seconds
+        if int(elapsed) % 30 == 0:
+            print(f"\n[INFO] Elapsed time during idle: {int(elapsed)}s")
+
+        time.sleep(1)
+
+
 def main():
     print("[INFO] Waiting for 1 hour (idle period) before starting operations...")
-    time.sleep(60)  # test, should be 3600= 1 hour in seconds
+    idle_countdown(60)  # Replace 60 with 3600 for 1 hour idle
 
     # Ensure data dir exists
     os.makedirs(DATA_DIR, exist_ok=True)
