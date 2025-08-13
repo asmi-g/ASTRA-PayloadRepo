@@ -27,12 +27,9 @@ except ImportError:
         print("CUDA not available")
 
 
-#TODO: start timmer so we start logging after 1-2 hours?
-
 BASE_DIR = "/home/nvidia/Projects/ASTRA/ASTRA-GeneralRepo/"
 print(f"Base directory: {BASE_DIR}")
 
-#TODO: add in error handling in case this folder is deleted (aka create the folder if it doesn't exist)
 DATA_DIR = os.path.join(BASE_DIR, "Scripts/SDR/Data/")
 print(f"Data directory: {DATA_DIR}")
 
@@ -48,18 +45,10 @@ print(f"ML script: {ML_SCRIPT}")
 TEMP_LOGGER_SCRIPT = os.path.join(BASE_DIR, "Scripts/SystemTesting/temperature_logger.py")
 print(f"Temp logger script: {TEMP_LOGGER_SCRIPT}")
 
-CSV_FILE_PATH = os.path.join(DATA_DIR, "signal.csv")
-print(f"CSV file path: {CSV_FILE_PATH}")
-
-SD_FILE_PATH = "/media/nvidia/sdcard/sdr_data.csv"
+SD_FILE_PATH = "/media/nvidia/sdcard/signal.csv"
 
 RUNTIME_SECONDS = 10  # duration to run TX/RX per cycle
 
-# TO DO
-# - Fix: "sink :warning: Soapy sink error: TIMEOUT"
-# - Integrate Chelsea's comments from previous pr
-# - Integrate AM scripts, address throttle block error and rerun on WSL
-# - Integrate timed operation for flight
 
 EXPECTED_SERIALS = [
     "0000000000000000a18c63dc2a8a8313",
@@ -164,7 +153,6 @@ def save_to_csv(rx_file_path, tx_file_path, csv_file_path):
 
     write_header = not os.path.exists(csv_file_path)
 
-    #TODO: add try except. 
     with open(csv_file_path, mode='a', newline='') as file:
         writer = csv.writer(file)
         if write_header:
@@ -219,10 +207,9 @@ def SDR_cycle():
     print("Saving to CSV...")
     save_to_csv(os.path.join(DATA_DIR, "rxdata.dat"),
                 os.path.join(DATA_DIR, "txdata.dat"),
-                CSV_FILE_PATH)
-    # UNCOMMENT WHEN SD CARD IS MOUNTED AND NAME IS CONFIRMED
-    save_to_sd(CSV_FILE_PATH, SD_FILE_PATH)
-    with open(CSV_FILE_PATH, newline='') as csvfile:
+                SD_FILE_PATH)
+
+    with open(SD_FILE_PATH, newline='') as csvfile:
         reader = csv.reader(csvfile)
         row_count = sum(1 for row in reader)
     print(f"CSV has {row_count} rows")
@@ -250,15 +237,15 @@ def idle_countdown(duration_seconds):
 
 
 def main():
-    print("[INFO] Waiting for 1 hour (idle period) before starting operations...")
-    idle_countdown(60)  # Replace 60 with 3600 for 1 hour idle
+    print("[INFO] Waiting for 30 minutes (idle period) before starting operations...")
+    idle_countdown(5)  # 1800=30 mins idle time
 
     # Ensure data dir exists
     os.makedirs(DATA_DIR, exist_ok=True)
     
     # Launch temperature logging script
-    print("Launching temperature logger...")
-    temp_logger_proc = run_script(TEMP_LOGGER_SCRIPT)
+    # print("Launching temperature logger...")
+    # temp_logger_proc = run_script(TEMP_LOGGER_SCRIPT)
 
     # Launch ML inference script once
     print("Launching ML model...")
@@ -269,22 +256,17 @@ def main():
         start_time = time.time()
         while True:
             elapsed = time.time() - start_time
-            if elapsed >= 2 * 60:  # 2 hours
-                print("[INFO] 2-hour operation time limit reached. Shutting down.")
+            if elapsed >= 120:  # 3600=1 hour operation time
+                print("[INFO] 1-hour operation time limit reached. Shutting down.")
                 break
             SDR_cycle()
             time.sleep(2)  # Optional delay between cycles
     except KeyboardInterrupt:
         print("Terminating Model Operation...")
         terminate_process(ml_proc)
-        print("Terminating temperature logging...")
-        terminate_process(temp_logger_proc)
     finally:
         print("Terminating Model Operation...")
         terminate_process(ml_proc)
-        print("Terminating temperature logging...")
-        terminate_process(temp_logger_proc)
-
 
 if __name__ == "__main__":
     main()

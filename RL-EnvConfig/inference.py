@@ -18,22 +18,18 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 model_path = os.path.normpath(os.path.join(script_dir, "../models/sac_noise_reduction_071225_10pm_10k.zip"))
 model = SAC.load(model_path, custom_objects=custom_objects)
 
-SD_RESULTS_PATH = "/media/nvidia/sdcard/ml_results.csv"  # Modify if SD label is different
+SD_DIR = "/media/nvidia/sdcard/"
 
-def save_to_sd(local_path, sd_path):
-    try:
-        os.makedirs(os.path.dirname(sd_path), exist_ok=True)
-        shutil.copy2(local_path, sd_path)
-        print(f"[INFO] Synced {local_path} -> {sd_path}")
-    except Exception as e:
-        print(f"[ERROR] Could not sync to SD card: {e}")
+# Results CSV will be written directly here
+SD_RESULTS_PATH = os.path.join(SD_DIR, "ml_results.csv")
 
-def save_results_and_sync():
-    os.makedirs("Data", exist_ok=True)
+# The incoming signal.csv is expected here too
+csv_path = os.path.join(SD_DIR, "signal.csv")
+
+def save_results():  # Does this over write?
     df_out = pd.DataFrame(results_rows)
-    df_out.to_csv("Data/results.csv", index=False)
-    save_to_sd("Data/results.csv", SD_RESULTS_PATH)
-
+    os.makedirs(SD_DIR, exist_ok=True)
+    df_out.to_csv(SD_RESULTS_PATH, index=False)
 
 # Initialize environment
 env = NoiseReductionEnv()
@@ -41,10 +37,9 @@ env = NoiseReductionEnv()
 # Parameters
 window_size = 1000
 
-BASE_DIR = "/home/nvidia/Projects/ASTRA/ASTRA-GeneralRepo/"
-DATA_DIR = os.path.join(BASE_DIR, "Scripts/SDR/Data/")
-csv_path = os.path.join(DATA_DIR, "signal.csv")
-
+# BASE_DIR = "/home/nvidia/Projects/ASTRA/ASTRA-GeneralRepo/"
+# DATA_DIR = os.path.join(BASE_DIR, "Scripts/SDR/Data/")
+# csv_path = os.path.join(DATA_DIR, "signal.csv")
 
 poll_interval = 2      # seconds between polls
 timeout_seconds = 120   # time to wait for new data before exiting
@@ -149,7 +144,7 @@ while (1):
 
         
         if counter % 100 == 0:
-            save_results_and_sync()
+            save_results()
 
 
         # Update sliding window for environment
@@ -183,9 +178,9 @@ while (1):
 env.close()
 
 # Save results
-os.makedirs("Data", exist_ok=True)
-pd.DataFrame(results_rows).to_csv("Data/results.csv", index=False)
-save_to_sd("Data/results.csv", SD_RESULTS_PATH)
-
+# os.makedirs("Data", exist_ok=True)
+# pd.DataFrame(results_rows).to_csv("Data/results.csv", index=False)
+#save_to_sd("Data/results.csv", SD_RESULTS_PATH)
+save_results()
 
 print("Inference complete. Results saved.")

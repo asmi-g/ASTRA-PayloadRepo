@@ -53,7 +53,7 @@ class RX(gr.top_block):
         self.soapy_hackrf_source_0.set_gain(0, 'LNA', min(max(40, 0.0), 40.0))
         self.soapy_hackrf_source_0.set_gain(0, 'VGA', min(max(0, 0.0), 62.0))
         self.blocks_head_0 = blocks.head(gr.sizeof_gr_complex*1, 50000000)
-        self.blocks_file_sink_0 = blocks.file_sink(gr.sizeof_gr_complex*1, 'Data/rxdata.dat', False)
+        self.blocks_file_sink_0 = blocks.file_sink(gr.sizeof_gr_complex*1, '/home/nvidia/Projects/ASTRA/ASTRA-GeneralRepo/Scripts/SDR/Data/rxdata.dat', False)
         self.blocks_file_sink_0.set_unbuffered(True)
 
 
