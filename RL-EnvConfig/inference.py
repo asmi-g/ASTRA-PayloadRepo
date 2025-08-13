@@ -28,6 +28,12 @@ def save_to_sd(local_path, sd_path):
     except Exception as e:
         print(f"[ERROR] Could not sync to SD card: {e}")
 
+def save_results_and_sync():
+    os.makedirs("Data", exist_ok=True)
+    df_out = pd.DataFrame(results_rows)
+    df_out.to_csv("Data/results.csv", index=False)
+    save_to_sd("Data/results.csv", SD_RESULTS_PATH)
+
 
 # Initialize environment
 env = NoiseReductionEnv()
@@ -141,6 +147,11 @@ while (1):
             "threshold_factor": t_factor
         })
 
+        
+        if counter % 100 == 0:
+            save_results_and_sync()
+
+
         # Update sliding window for environment
         current_window_clean.pop(0)
         current_window_noisy.pop(0)
@@ -174,8 +185,7 @@ env.close()
 # Save results
 os.makedirs("Data", exist_ok=True)
 pd.DataFrame(results_rows).to_csv("Data/results.csv", index=False)
-
-# Sync to SD card
 save_to_sd("Data/results.csv", SD_RESULTS_PATH)
+
 
 print("Inference complete. Results saved.")

@@ -230,6 +230,9 @@ def SDR_cycle():
     print("Cycle complete.\n")
 
 def main():
+    print("[INFO] Waiting for 1 hour (idle period) before starting operations...")
+    time.sleep(3600)  # 1 hour in seconds
+
     # Ensure data dir exists
     os.makedirs(DATA_DIR, exist_ok=True)
     
@@ -243,13 +246,22 @@ def main():
 
     # SDR capture loop
     try:
+        start_time = time.time()
         while True:
+            elapsed = time.time() - start_time
+            if elapsed >= 2 * 3600:  # 2 hours
+                print("[INFO] 2-hour operation time limit reached. Shutting down.")
+                break
             SDR_cycle()
             time.sleep(2)  # Optional delay between cycles
     except KeyboardInterrupt:
         print("Terminating Model Operation...")
         terminate_process(ml_proc)
-
+        print("Terminating temperature logging...")
+        terminate_process(temp_logger_proc)
+    finally:
+        print("Terminating Model Operation...")
+        terminate_process(ml_proc)
         print("Terminating temperature logging...")
         terminate_process(temp_logger_proc)
 
