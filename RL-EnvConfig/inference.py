@@ -19,12 +19,15 @@ model_path = os.path.normpath(os.path.join(script_dir, "../models/sac_noise_redu
 model = SAC.load(model_path, custom_objects=custom_objects)
 
 SD_RESULTS_PATH = "/media/nvidia/sdcard/ml_results.csv"  # Modify if SD label is different
+SD_SIGNAL_PATH = "/media/nvidia/sdcard/sdr_data.csv"  # Adjust mount path if needed
+csv_path = SD_SIGNAL_PATH
 
-def save_to_sd(local_path, sd_path):
+
+def save_results_direct():
     try:
-        os.makedirs(os.path.dirname(sd_path), exist_ok=True)
-        shutil.copy2(local_path, sd_path)
-        print(f"[INFO] Synced {local_path} -> {sd_path}")
+        os.makedirs(os.path.dirname(SD_RESULTS_PATH), exist_ok=True)
+        pd.DataFrame(results_rows).to_csv(SD_RESULTS_PATH, index=False)
+        print(f"[INFO] Results written directly to {SD_RESULTS_PATH}")
     except Exception as e:
         print(f"[ERROR] Could not sync to SD card: {e}")
 
@@ -42,8 +45,6 @@ env = NoiseReductionEnv()
 window_size = 1000
 
 BASE_DIR = "/home/nvidia/Projects/ASTRA/ASTRA-GeneralRepo/"
-DATA_DIR = os.path.join(BASE_DIR, "Scripts/SDR/Data/")
-csv_path = os.path.join(DATA_DIR, "signal.csv")
 
 
 poll_interval = 2      # seconds between polls
@@ -149,7 +150,7 @@ while (1):
 
         
         if counter % 100 == 0:
-            save_results_and_sync()
+            save_results_direct()
 
 
         # Update sliding window for environment
@@ -182,10 +183,7 @@ while (1):
 
 env.close()
 
-# Save results
-os.makedirs("Data", exist_ok=True)
-pd.DataFrame(results_rows).to_csv("Data/results.csv", index=False)
-save_to_sd("Data/results.csv", SD_RESULTS_PATH)
+save_results_direct()
 
 
 print("Inference complete. Results saved.")

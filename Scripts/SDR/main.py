@@ -155,17 +155,17 @@ def terminate_process(proc):
         # Process already exited
         pass
 
-def save_to_csv(rx_file_path, tx_file_path, csv_file_path):
+def save_to_csv(rx_file_path, tx_file_path, sd_file_path):
     rx_data = np.fromfile(open(rx_file_path), dtype=np.complex64)
     tx_data = np.fromfile(open(tx_file_path), dtype=np.complex64)
 
     tx_data_last = tx_data[-500000:] if len(tx_data) >= 500000 else tx_data
     rx_data_last = rx_data[-500000:] if len(rx_data) >= 500000 else rx_data
 
-    write_header = not os.path.exists(csv_file_path)
+    write_header = not os.path.exists(sd_file_path)
 
     #TODO: add try except. 
-    with open(csv_file_path, mode='a', newline='') as file:
+    with open(sd_file_path, mode='a', newline='') as file:
         writer = csv.writer(file)
         if write_header:
             writer.writerow(["Index", "Timestamp (ISO)", 
@@ -219,10 +219,8 @@ def SDR_cycle():
     print("Saving to CSV...")
     save_to_csv(os.path.join(DATA_DIR, "rxdata.dat"),
                 os.path.join(DATA_DIR, "txdata.dat"),
-                CSV_FILE_PATH)
-    # UNCOMMENT WHEN SD CARD IS MOUNTED AND NAME IS CONFIRMED
-    save_to_sd(CSV_FILE_PATH, SD_FILE_PATH)
-    with open(CSV_FILE_PATH, newline='') as csvfile:
+                SD_FILE_PATH)
+    with open(SD_FILE_PATH, newline='') as csvfile:
         reader = csv.reader(csvfile)
         row_count = sum(1 for row in reader)
     print(f"CSV has {row_count} rows")
@@ -257,8 +255,8 @@ def main():
     os.makedirs(DATA_DIR, exist_ok=True)
     
     # Launch temperature logging script
-    print("Launching temperature logger...")
-    temp_logger_proc = run_script(TEMP_LOGGER_SCRIPT)
+    # print("Launching temperature logger...")
+    # temp_logger_proc = run_script(TEMP_LOGGER_SCRIPT)
 
     # Launch ML inference script once
     print("Launching ML model...")
@@ -277,13 +275,13 @@ def main():
     except KeyboardInterrupt:
         print("Terminating Model Operation...")
         terminate_process(ml_proc)
-        print("Terminating temperature logging...")
-        terminate_process(temp_logger_proc)
+        # print("Terminating temperature logging...")
+        # terminate_process(temp_logger_proc)
     finally:
         print("Terminating Model Operation...")
         terminate_process(ml_proc)
-        print("Terminating temperature logging...")
-        terminate_process(temp_logger_proc)
+        # print("Terminating temperature logging...")
+        # terminate_process(temp_logger_proc)
 
 
 if __name__ == "__main__":
