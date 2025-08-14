@@ -1,178 +1,175 @@
-import gym
+import os, time
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+from collections import deque
 from stable_baselines3 import SAC
-from astra_rev1.envs import NoiseReductionEnv
-import os
-import time
+from astra_rev1.envs import NoiseReductionEnv  # fixed-size obs
+import matplotlib.pyplot as plt  # (optional)
 
-# Load SAC model
-custom_objects = {
-    "lr_schedule": lambda x: 0.003,
-    "clip_range": lambda x: 0.02
-}
+# ---------------- Config ----------------
+WINDOW_SIZE = 10
+POLL_INTERVAL = 2
+TIMEOUT_SECONDS = 10
+N_STACK = 4  # must match training
 
-script_dir = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.normpath(os.path.join(script_dir, "../models/sac_noise_reduction_080725_6am.zip"))
-model = SAC.load(model_path, custom_objects=custom_objects)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR   = "/home/nvidia/Projects/ASTRA/ASTRA-GeneralRepo/"
+DATA_DIR   = os.path.join(BASE_DIR, "Scripts/SDR/Data/")
+CSV_PATH = os.path.join(DATA_DIR, "signal.csv")
+#CSV_PATH = os.path.normpath(os.path.join(SCRIPT_DIR, "../Data/simulated_signal_data.csv")) # for testing
+MODEL_PATH = os.path.normpath(os.path.join(SCRIPT_DIR, "../models/sac_noise_reduction_081225_9pm.zip"))
+RESULTS_DIR = os.path.join(SCRIPT_DIR, "Data")
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# Initialize environment
+# ---------------- Load ----------------
+model = SAC.load(MODEL_PATH, custom_objects={"lr_schedule": lambda x: 0.003, "clip_range": lambda x: 0.02})
 env = NoiseReductionEnv()
 
-# Parameters
-window_size = 10
+# ---------------- State / buffers ----------------
+frame_buf = deque(maxlen=N_STACK)
+last_processed = WINDOW_SIZE - 1
+last_update = time.time()
+done = False
+log_every = 1000
+log_counter = 0
 
-BASE_DIR = "/home/nvidia/Projects/ASTRA/ASTRA-GeneralRepo/"
-DATA_DIR = os.path.join(BASE_DIR, "Scripts/SDR/Data/")
-csv_path = os.path.join(DATA_DIR, "signal.csv")
-#csv_path = os.path.normpath(os.path.join(script_dir, "../Data/simulated_signal_data.csv")) # for testing
-
-poll_interval = 2      # seconds between polls
-timeout_seconds = 120   # time to wait for new data before exiting
-
-# Tracking
-actions = []
-rewards = []
-snr_raw_list = []
-snr_filtered_list = []
-snr_improvement = []
-clean_signal_data = []
-noisy_signal_data = []
-filtered_signal_data = []
-thresholds = []
-mse = []
+# metrics / output
+rewards, thresholds = [], []
+snr_raw_list, snr_filtered_list, snr_improvement = [], [], []
+clean_signal_data, noisy_signal_data, filtered_signal_data = [], [], []
 results_rows = []
 
-last_processed_index = window_size - 1
-last_update_time = time.time()
-done = False
+# ---------------- Helpers ----------------
+def stack_obs(obs_1d: np.ndarray) -> np.ndarray:
+    if not frame_buf:
+        for _ in range(N_STACK):
+            frame_buf.append(obs_1d)
+    else:
+        frame_buf.append(obs_1d)
+    return np.concatenate(frame_buf, axis=0)
 
-# --- before the loop ---
-clean_signal_data    = []
-noisy_signal_data    = []
-filtered_signal_data = []
+def read_csv(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path).rename(columns={"TX Magnitude": "Noisy Signal", "RX Magnitude": "Clean Signal"})
+    if not {"Clean Signal", "Noisy Signal"}.issubset(df.columns):
+        raise ValueError("CSV missing required columns.")
+    return df
 
+# ---------------- Main ----------------
 print("Waiting for data to appear...")
-counter = 0
 
-while (1):
-    # Load the latest CSV
+while True:
     try:
-        df = pd.read_csv(csv_path).rename(columns={
-            'TX Magnitude': 'Noisy Signal',
-            'RX Magnitude': 'Clean Signal'
-        })
-    except (pd.errors.EmptyDataError, FileNotFoundError):
-        print("signal.csv not ready. Retrying...")
-        print(csv_path)
-        time.sleep(poll_interval)
+        df = read_csv(CSV_PATH)
+    except (pd.errors.EmptyDataError, FileNotFoundError, ValueError):
+        print("signal.csv not ready or invalid. Retrying...\n", CSV_PATH)
+        time.sleep(POLL_INTERVAL)
         continue
 
-    # Check if there is enough data
-    if len(df) < window_size:
+    if len(df) < WINDOW_SIZE:
         print("Not enough data yet...")
-        time.sleep(poll_interval)
+        time.sleep(POLL_INTERVAL)
         continue
 
-    # Check for new data
-    if last_processed_index >= len(df):
-        if time.time() - last_update_time > timeout_seconds:
+    if last_processed >= len(df):
+        if time.time() - last_update > TIMEOUT_SECONDS:
             print("No new data detected for timeout period. Exiting.")
             break
-        else:
-            print("Waiting for new data...")
-            time.sleep(poll_interval)
-            continue
+        print("Waiting for new data...")
+        time.sleep(POLL_INTERVAL)
+        continue
 
-    # New data is available
-    last_update_time = time.time()
+    last_update = time.time()
 
-    while last_processed_index <= len(df) - 1:
-        i = last_processed_index
+    while last_processed <= len(df) - 1:
+        i = last_processed
 
-        # build right-aligned windows that end at index i
-        win_clean = df.iloc[i - window_size + 1 : i + 1]["Clean Signal"].to_numpy()
-        win_noisy = df.iloc[i - window_size + 1 : i + 1]["Noisy Signal"].to_numpy()
+        # right-aligned window [i-W+1, i]
+        win_clean = df.iloc[i - WINDOW_SIZE + 1 : i + 1]["Clean Signal"].to_numpy()
+        win_noisy = df.iloc[i - WINDOW_SIZE + 1 : i + 1]["Noisy Signal"].to_numpy()
 
-        if i == window_size - 1:
+        # initialize env & stack on first window
+        if i == WINDOW_SIZE - 1:
             state = env.reset(clean_signal=win_clean, noisy_signal=win_noisy)
+            state_in = stack_obs(np.asarray(state, dtype=np.float32).reshape(-1))
+        else:
+            state_in = stack_obs(np.asarray(state, dtype=np.float32).reshape(-1))
 
-        # RL step
-        state_in = np.expand_dims(state, 0)
+        # predict + step
         action, _ = model.predict(state_in, deterministic=True)
         next_state, reward, done, info = env.step(action)
 
-        # logging
-        snr_raw = info["SNR_raw"]
-        snr_filtered = info["SNR_filtered"]
-        filt = np.asarray(info["filtered_signal"])  # length == window_size
-        t_factor = info["threshold_factor"]
+        # info / metrics
+        snr_raw = info.get("SNR_raw")
+        snr_flt = info.get("SNR_filtered")
+        filt    = np.asarray(info.get("filtered_signal", [])) * np.max(np.abs(win_clean))
+        thr     = info.get("threshold_factor", np.nan)
 
-        rewards.append(reward)
-        thresholds.append(t_factor)
-        snr_raw_list.append(snr_raw)
-        snr_filtered_list.append(snr_filtered)
-        snr_improvement.append(snr_filtered - snr_raw)
+        rewards.append(float(reward))
+        thresholds.append(float(thr) if thr is not None else np.nan)
+        snr_raw_list.append(float(snr_raw) if snr_raw is not None else np.nan)
+        snr_filtered_list.append(float(snr_flt) if snr_flt is not None else np.nan)
+        snr_improvement.append((snr_flt - snr_raw) if (snr_raw is not None and snr_flt is not None) else np.nan)
 
-        # --- synced saving ---
-        if i == window_size - 1:
-            # first step: dump the whole window
+        # synced saving
+        if i == WINDOW_SIZE - 1:
             clean_signal_data.extend(win_clean.tolist())
             noisy_signal_data.extend(win_noisy.tolist())
-            filtered_signal_data.extend(filt.tolist())
+            filtered_signal_data.extend((filt if filt.size == WINDOW_SIZE else np.resize(filt, WINDOW_SIZE)).tolist())
         else:
-            # subsequent: append one sample (right anchor at i)
             clean_signal_data.append(float(df.iloc[i]["Clean Signal"]))
             noisy_signal_data.append(float(df.iloc[i]["Noisy Signal"]))
-            filtered_signal_data.append(float(filt[-1]))
+            filtered_signal_data.append(float(filt[-1]) if filt.size else np.nan)
 
-        if counter == 1000:
-            counter = 0
-            print(f"Rows {i-window_size, i} | Action: {action} | Reward: {reward:.4f} | SNR Improvement: {snr_improvement[-1]:.2f} | SNR Raw: {snr_raw:.2f} | SNR Filtered: {snr_filtered:.2f} | Done: {done} | filtered signal: {np.mean(filtered_signal):.4f} | clean signal: {np.mean(current_window_clean):.4f} | threshold factor: {t_factor:.4f}")
-        else:
-            counter = counter + 1
+        # periodic log
+        if (log_counter % log_every) == 0:
+            si = snr_improvement[-1] if snr_improvement else np.nan
+            sr = snr_raw_list[-1] if snr_raw_list else np.nan
+            sf = snr_filtered_list[-1] if snr_filtered_list else np.nan
+            fmean = float(np.mean(filt)) if filt.size else np.nan
+            print(f"Rows {(i - WINDOW_SIZE, i)} | a={action} r={reward:.4f} ΔSNR={si:.2f} "
+                  f"SNR(raw,flt)=({sr:.2f},{sf:.2f}) done={done} filt_mean={fmean:.4f} thr={thr:.4f}")
+        log_counter += 1
 
         results_rows.append({
-            "window": f"({i - window_size + 1}, {i})",
-            "action": action,
-            "reward": reward,
-            "snr_improvement": snr_improvement[-1],
-            "threshold_factor": t_factor
+            "window": f"({i - WINDOW_SIZE + 1}, {i})",
+            "action": float(action[0]) if np.ndim(action) else float(action),
+            "reward": float(reward),
+            "snr_improvement": float(snr_improvement[-1]),
+            "threshold_factor": float(thr) if thr is not None else np.nan
         })
 
-        # prepare next window for the env (only if there *is* a next sample)
+        # advance to next window
         if i + 1 < len(df):
             next_win_clean = np.r_[win_clean[1:], df.iloc[i + 1]["Clean Signal"]]
             next_win_noisy = np.r_[win_noisy[1:], df.iloc[i + 1]["Noisy Signal"]]
             env.set_signal_window(next_win_clean, next_win_noisy)
 
         state = next_state
-        last_processed_index += 1
+        last_processed += 1
 
-        if done:
-            #print(f"Early termination signaled by environment at index {i}.")
-            
-            results_rows.append({
-            "window": f"(DONE)",
-            "action": np.NaN,
-            "reward": np.NaN,
-            "snr_improvement": np.NaN,
-            "threshold_factor": np.NaN
-            })
-            
+        if done:  # mark, then continue streaming
+            results_rows.append({"window": "(DONE)", "action": np.nan, "reward": np.nan,
+                                 "snr_improvement": np.nan, "threshold_factor": np.nan})
+            done = False
 
-    time.sleep(poll_interval)
+    time.sleep(POLL_INTERVAL)
 
 env.close()
 
-# Save results
-os.makedirs("Data", exist_ok=True)
-pd.DataFrame(results_rows).to_csv("Data/results.csv", index=False)
-
+# save results
+pd.DataFrame(results_rows).to_csv(os.path.join(RESULTS_DIR, "results.csv"), index=False)
 print("Inference complete. Results saved.")
 
-# snr_improvement = np.array(snr_improvement)
+snr_improvement = np.array(snr_improvement)
+valid_improvements = [v for v in snr_improvement if not np.isnan(v)]
+
+if valid_improvements:
+    avg_snr_imp = np.mean(valid_improvements)
+    print(f"Average SNR Improvement: {avg_snr_imp:.2f} dB over {len(valid_improvements)} steps")
+else:
+    print("No valid SNR improvement values recorded.")
+
+
 # x = np.arange(len(snr_improvement))
 # coeffs = np.polyfit(x, snr_improvement, deg=1)
 # trendline = np.polyval(coeffs, x)
