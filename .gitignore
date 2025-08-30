@@ -215,3 +215,12 @@ RL-EnvConfig/Training/Logs/evaluations.npz
 RL-EnvConfig/Training/Logs/SAC_1/events.out.tfevents.1752364785.DESKTOP-DGMFJ5G.13532.0
 RL-EnvConfig/models/sac_checkpoint_10000_steps.zip
 RL-EnvConfig/Data/results.csv
+models/sac_noise_reduction_080525_7pm.zip
+models/models_ignore_071625/sac_checkpoint_10000_steps.zip
+models/models_ignore_071625/sac_checkpoint_20000_steps.zip
+models/models_ignore_071625/sac_checkpoint_30000_steps.zip
+models/models_ignore_071625/best_model/best_model.zip
+Data/results.csv
+Training/Logs/SAC_080525_7pm/events.out.tfevents.1754465055.DESKTOP-DGMFJ5G.13400.0
+Training/Logs/SAC_080625_4am/events.out.tfevents.1754466354.DESKTOP-DGMFJ5G.10700.0
+Training/Logs/action_logs/events.out.tfevents.1754465055.DESKTOP-DGMFJ5G.13400.1
