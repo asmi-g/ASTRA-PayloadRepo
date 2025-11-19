@@ -15,8 +15,9 @@ custom_objects = {
 }
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.normpath(os.path.join(script_dir, "../models/sac_noise_reduction_071225_10pm_10k.zip"))
+model_path = os.path.normpath(os.path.join(script_dir, "../models/sac_noise_reduction_080725_6am"))
 model = SAC.load(model_path, custom_objects=custom_objects)
+<<<<<<< HEAD
 
 SD_RESULTS_PATH = "/media/nvidia/sdcard/ml_results.csv"  # Modify if SD label is different
 SD_SIGNAL_PATH = "/media/nvidia/sdcard/sdr_data.csv"  # Adjust mount path if needed
@@ -46,18 +47,36 @@ def save_results_and_sync():
     df_out.to_csv("Data/results.csv", index=False)
     save_to_sd("Data/results.csv", SD_RESULTS_PATH)
 
+=======
+SD_DIR = "/media/nvidia/sdcard/"
+# Results CSV will be written directly here
+SD_RESULTS_PATH = os.path.join(SD_DIR, "ml_results.csv")
+# The incoming signal.csv is expected here too
+csv_path = os.path.join(SD_DIR, "signal.csv")
+>>>>>>> 60852406fe419520d80590df73e7b5af47775af2
 
 # Initialize environment
 env = NoiseReductionEnv()
 
 # Parameters
+<<<<<<< HEAD
 window_size = 1000
 
 BASE_DIR = "/home/nvidia/Projects/ASTRA/ASTRA-GeneralRepo/"
 
+=======
+window_size = 10
+>>>>>>> 60852406fe419520d80590df73e7b5af47775af2
 
 poll_interval = 2      # seconds between polls
 timeout_seconds = 120   # time to wait for new data before exiting
+
+
+def save_results():  # Does this over write?
+    df_out = pd.DataFrame(results_rows)
+    os.makedirs(SD_DIR, exist_ok=True)
+    df_out.to_csv(SD_RESULTS_PATH, index=False)
+
 
 # Tracking
 actions = []
@@ -72,7 +91,7 @@ thresholds = []
 mse = []
 results_rows = []
 
-last_processed_index = window_size
+last_processed_index = window_size - 1
 last_update_time = time.time()
 done = False
 
@@ -111,69 +130,72 @@ while (1):
     # New data is available
     last_update_time = time.time()
 
-    while last_processed_index < len(df):
+    while last_processed_index <= len(df) - 1:
         i = last_processed_index
-        current_window_clean = df.iloc[i - window_size:i]["Clean Signal"].tolist()
-        current_window_noisy = df.iloc[i - window_size:i]["Noisy Signal"].tolist()
+	
+        # build right-aligned windows that end at index i
+        win_clean = df.iloc[i - window_size + 1 : i + 1]["Clean Signal"].to_numpy()
+        win_noisy = df.iloc[i - window_size + 1 : i + 1]["Noisy Signal"].to_numpy()
 
-        # For the first iteration, reset the environment
-        if i == window_size:
-            state = env.reset(clean_signal=np.array(current_window_clean),
-                              noisy_signal=np.array(current_window_noisy))
+        if i == window_size - 1:
+            state = env.reset(clean_signal=win_clean, noisy_signal=win_noisy)
 
-        # Prepare state
-        state = np.expand_dims(state, axis=0)
-        action, _ = model.predict(state, deterministic=True)
-
+        # RL step
+        state_in = np.expand_dims(state, 0)
+        action, _ = model.predict(state_in, deterministic=True)
         next_state, reward, done, info = env.step(action)
 
+        # logging
         snr_raw = info["SNR_raw"]
         snr_filtered = info["SNR_filtered"]
-        filtered_signal = info["filtered_signal"]
+        filt = np.asarray(info["filtered_signal"])  # length == window_size
         t_factor = info["threshold_factor"]
 
         rewards.append(reward)
         thresholds.append(t_factor)
         snr_raw_list.append(snr_raw)
         snr_filtered_list.append(snr_filtered)
-        snr_improvement.append(snr_filtered_list[-1] - snr_raw_list[-1])
-        mse.append(np.square(np.subtract(snr_filtered, snr_raw)).mean())
+        snr_improvement.append(snr_filtered - snr_raw)
 
-        clean_signal_data.extend(info["clean_signal"])
-        noisy_signal_data.extend(info["noisy_signal"])
-        filtered_signal_data.extend(filtered_signal)
+        # --- synced saving ---
+        if i == window_size - 1:
+            # first step: dump the whole window
+            clean_signal_data.extend(win_clean.tolist())
+            noisy_signal_data.extend(win_noisy.tolist())
+            filtered_signal_data.extend(filt.tolist())
+        else:
+            # subsequent: append one sample (right anchor at i)
+            clean_signal_data.append(float(df.iloc[i]["Clean Signal"]))
+            noisy_signal_data.append(float(df.iloc[i]["Noisy Signal"]))
+            filtered_signal_data.append(float(filt[-1]))
 
         if counter == 1000:
             counter = 0
-            print(f"Rows {i-window_size, i} | Action: {action} | Reward: {reward:.4f} | SNR Improvement: {snr_improvement[-1]:.2f} | SNR Raw: {snr_raw:.2f} | SNR Filtered: {snr_filtered:.2f} | Done: {done} | filtered signal: {np.mean(filtered_signal):.4f} | clean signal: {np.mean(current_window_clean):.4f} | threshold factor: {t_factor:.4f}")
+            print(f"Rows {i-window_size, i} | Action: {action} | Reward: {reward:.4f} | SNR Improvement: {snr_improvement[-1]:.2f} | SNR Raw: {snr_raw:.2f} | SNR Filtered: {snr_filtered:.2f} | Done: {done} | filtered signal: {np.mean(filtered_signal_data):.4f} | clean signal: {np.mean(win_clean):.4f} | threshold factor: {t_factor:.4f}")
         else:
             counter = counter + 1
 
         results_rows.append({
-            "window": f"({i - window_size}, {i})",
+            "window": f"({i - window_size + 1}, {i})",
             "action": action,
             "reward": reward,
-            "snr_improvement": snr_improvement,
+            "snr_improvement": snr_improvement[-1],
             "threshold_factor": t_factor
         })
 
+<<<<<<< HEAD
         
         if counter % 100 == 0:
             save_results_direct()
+=======
+        # prepare next window for the env (only if there *is* a next sample)
+        if i + 1 < len(df):
+            next_win_clean = np.r_[win_clean[1:], df.iloc[i + 1]["Clean Signal"]]
+            next_win_noisy = np.r_[win_noisy[1:], df.iloc[i + 1]["Noisy Signal"]]
+            env.set_signal_window(next_win_clean, next_win_noisy)
+>>>>>>> 60852406fe419520d80590df73e7b5af47775af2
 
-
-        # Update sliding window for environment
-        current_window_clean.pop(0)
-        current_window_noisy.pop(0)
-        current_window_clean.append(df.iloc[i]["Clean Signal"])
-        current_window_noisy.append(df.iloc[i]["Noisy Signal"])
-
-        env.set_signal_window(np.array(current_window_clean), np.array(current_window_noisy))
-
-        # Update state
         state = next_state
-
-        # Increment index
         last_processed_index += 1
 
         if done:
@@ -192,7 +214,15 @@ while (1):
 
 env.close()
 
+<<<<<<< HEAD
 save_results_direct()
 
+=======
+# Save results
+# os.makedirs("Data", exist_ok=True)
+# pd.DataFrame(results_rows).to_csv("Data/results.csv", index=False)
+#save_to_sd("Data/results.csv", SD_RESULTS_PATH)
+save_results()
+>>>>>>> 60852406fe419520d80590df73e7b5af47775af2
 
 print("Inference complete. Results saved.")
