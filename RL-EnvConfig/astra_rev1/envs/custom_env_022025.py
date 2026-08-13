@@ -1,13 +1,13 @@
+#env.py
 # step 1: creating custom environment by subclassing gym.Env
-import gym
-from gym import spaces
+import gymnasium as gym
+from gymnasium import spaces
 import numpy as np
 import pywt
 
 class NoiseReductionEnv(gym.Env):
     def __init__(self):
         super().__init__()
-
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32)
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
 

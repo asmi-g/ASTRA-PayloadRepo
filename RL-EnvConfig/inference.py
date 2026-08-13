@@ -1,3 +1,4 @@
+#inference.py
 import gym
 import numpy as np
 import pandas as pd
@@ -6,6 +7,7 @@ from stable_baselines3 import SAC
 from astra_rev1.envs import NoiseReductionEnv
 import os
 import time
+from datetime import datetime
 
 # Load SAC model
 custom_objects = {
@@ -15,17 +17,16 @@ custom_objects = {
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 model_path = os.path.normpath(os.path.join(script_dir, "../models/sac_noise_reduction_071225_10pm_10k.zip"))
-model = SAC.load(model_path, custom_objects=custom_objects)
-
-# Initialize environment
 env = NoiseReductionEnv()
+model = SAC.load(model_path, custom_objects=custom_objects)
 
 # Parameters
 window_size = 1000
 
-BASE_DIR = "/home/nvidia/Projects/ASTRA/ASTRA-GeneralRepo/"
-DATA_DIR = os.path.join(BASE_DIR, "Scripts/SDR/Data/")
-csv_path = os.path.join(DATA_DIR, "signal.csv")
+BASE_DIR ="/Users/imanq/Documents/Programs/GitHub/ASTRA-GeneralRepo/"
+DATA_DIR = os.path.join(BASE_DIR, "Data/") #Scripts/SDR/
+#csv_path = os.path.join(DATA_DIR, "flight_signal_1.csv")
+csv_path = os.path.join(DATA_DIR, "simulated_signal_data.csv")
 
 
 poll_interval = 2      # seconds between polls
@@ -45,7 +46,7 @@ mse = []
 results_rows = []
 
 last_processed_index = window_size
-last_update_time = time.time()
+last_update_time = datetime.now()
 done = False
 
 print("Waiting for data to appear...")
@@ -55,8 +56,8 @@ while (1):
     # Load the latest CSV
     try:
         df = pd.read_csv(csv_path).rename(columns={
-            'TX Magnitude': 'Noisy Signal',
-            'RX Magnitude': 'Clean Signal'
+            'RX Magnitude': 'Noisy Signal',
+            'TX Magnitude': 'Clean Signal'
         })
     except (pd.errors.EmptyDataError, FileNotFoundError):
         print("signal.csv not ready. Retrying...")
@@ -125,7 +126,7 @@ while (1):
             "window": f"({i - window_size}, {i})",
             "action": action,
             "reward": reward,
-            "snr_improvement": snr_improvement,
+            "snr_improvement": snr_improvement[-1],
             "threshold_factor": t_factor
         })
 
@@ -161,6 +162,6 @@ env.close()
 
 # Save results
 os.makedirs("Data", exist_ok=True)
-pd.DataFrame(results_rows).to_csv("Data/results.csv", index=False)
+pd.DataFrame(results_rows).to_csv(f"Data/{last_update_time}_results.csv", index=False)
 
 print("Inference complete. Results saved.")
