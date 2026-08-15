@@ -4,12 +4,18 @@ import matplotlib.pyplot as plt
 
 # ---- Load CSV ----
 # If your CSV has tab separation like the sample, use sep="\t"
-df = pd.read_csv("../../Data/ml_results.csv", sep=",")
-
-
+#df = pd.read_csv("/Users/imanq/Documents/Programs/GitHub/ASTRA-GeneralRepo/Data/20260813_081622_results.csv", sep=",")
+df = pd.read_csv("/Users/imanq/Documents/Programs/GitHub/ASTRA-GeneralRepo/Data/ml_results.csv", sep = ",")
+print(df.head())
 # ---- Parse complex columns ----
 # Convert "(0, 9)" → tuple, "[[-1.]]" → float
-df["window"] = df["window"].apply(ast.literal_eval)
+def parse_window(w):
+    try:
+        return ast.literal_eval(w)
+    except (ValueError, SyntaxError):
+        return None  # marks the "(DONE)" rows
+
+df["window"] = df["window"].apply(parse_window)
 df["action"] = df["action"].apply(lambda x: float(ast.literal_eval(x)[0][0]))
 
 # Convert scientific notation strings to float if needed
@@ -57,3 +63,4 @@ plt.grid(True)
 
 plt.tight_layout()
 plt.show()
+

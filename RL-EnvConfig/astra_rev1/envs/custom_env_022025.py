@@ -89,7 +89,7 @@ class NoiseReductionEnv(gym.Env):
             recent_rewards = self.reward_history[-10:]
             std_dev = np.std(recent_rewards)
             if std_dev < 1e-17:
-                print(f"std: {std_dev}. threshold = {std_dev < 1e-20}")
+                #print(f"std: {std_dev}. threshold = {std_dev < 1e-20}")
                 done = True
         # if self.t + self.window_size >= len(self.noisy): # comment this out too during inference.py
         #     done = True
@@ -162,6 +162,7 @@ class StatelessDenoisingEnv(gym.Env):
             "SNR_raw": snr_raw,
             "SNR_filtered": snr_filtered
         }
+        #print(f"threshold factor: {threshold}")
 
         return window.astype(np.float32), reward, False, info 
 

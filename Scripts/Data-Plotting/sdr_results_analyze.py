@@ -1,7 +1,8 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
-csv_path = r"D:\signal.csv"
+#csv_path = r"D:\signal.csv"
+csv_path = "/Users/imanq/Documents/Programs/GitHub/ASTRA-GeneralRepo/Data/flight_signal_2.csv"
 chunksize = 200_000
 downsample_factor = 200
 
