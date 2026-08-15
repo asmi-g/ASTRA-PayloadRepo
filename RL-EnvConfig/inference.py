@@ -25,10 +25,10 @@ model = SAC.load(model_path, custom_objects=custom_objects)
 
 BASE_DIR = "/Users/imanq/Documents/Programs/GitHub/ASTRA-GeneralRepo/"
 DATA_DIR = os.path.join(BASE_DIR, "Data/")
-#csv_path = "/Users/imanq/Downloads/simulated_signal_data.csv"
-csv_path = os.path.join(DATA_DIR, "flight_signal_2.csv")
-RESULTS_PATH = os.path.join(DATA_DIR, f"{timestamp_str}_results.csv")
-SIGNAL_PATH = os.path.join(DATA_DIR, f"{timestamp_str}_signal.csv")
+csv_path = "/Users/imanq/Downloads/simulated_signal_data.csv"
+#csv_path = os.path.join(DATA_DIR, "flight_signal_2.csv")
+RESULTS_PATH = os.path.join(DATA_DIR, f"{timestamp_str}_results_ws10s1.csv")
+SIGNAL_PATH = os.path.join(DATA_DIR, f"{timestamp_str}_signal_ws10s1.csv")
 
 
 def save_results_direct():
@@ -87,12 +87,12 @@ def save_signal_data():
     except Exception as e:
         print(f"[ERROR] Could not save signal data: {e}")
 
+# Parameters
+window_size = 10
+stride = 1
 
 # Initialize environment
 env = NoiseReductionEnv()
-
-# Parameters
-window_size = 1000
 
 poll_interval = 2      # seconds between polls
 timeout_seconds = 120   # time to wait for new data before exiting
@@ -217,7 +217,7 @@ while (1):
             save_signal_data()  # --- NEW ---
 
         state = next_state
-        last_processed_index += 1
+        last_processed_index += stride
 
         if done:
             results_rows.append({
