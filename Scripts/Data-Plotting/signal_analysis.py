@@ -28,11 +28,11 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ── Config ────────────────────────────────────────────────────────────────
-FLIGHT_CSV = "C:/Users/imanq/Documents/Programs/GitHub/ASTRA-GeneralRepo/Data/flight_signal_2_clean_noisy.csv"
-SIMULATED_CSV = "C:/Users/imanq/Downloads/simulated_signal_data.csv"
+FLIGHT_CSV = "C:/Users/imanq/Documents/Programs/GitHub/ASTRA-GeneralRepo/Data/flight_signal_1_clean_noisy.csv"
+SIMULATED_CSV = "C:/Users/imanq/Documents/Programs/GitHub/ASTRA-GeneralRepo/Data/simulated_signal_match_hz.csv"
 COMPARE_TO_SIMULATED = True   # set False to only analyze FLIGHT_CSV
 
-CHUNK_SIZE = 10_000            # for stationarity check
+CHUNK_SIZE = 100_000            # for stationarity check
 BURST_MAD_THRESHOLD = 6.0      # burst = |noise| more than this many MADs from median
 OUTPUT_PREFIX = "signal_analysis"
 

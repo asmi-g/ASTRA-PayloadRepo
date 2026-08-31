@@ -1,4 +1,7 @@
-# train_sb.py
+# train_un.py
+# Same as train_sb.py, but trains on the flight-extracted noise model
+# (noise_model_fs1.pkl, task 8/9) instead of the synthetic white+pink+burst
+# model -- this is the "UN" (updated noise) model.
 import time
 start_time = time.time()
 import os
@@ -19,8 +22,10 @@ TIMESTEPS = 100_000
 seed = 42
 np.random.seed(seed)
 
-train_env = Monitor(NoiseReductionEnv(signal_length=10_000, window_size=1000, mode="train"))
-eval_env = Monitor(NoiseReductionEnv(signal_length=10_000, window_size=1000, mode="train"))
+NOISE_MODEL_PATH = "../Data/noise_model_fs1.pkl"
+
+train_env = Monitor(NoiseReductionEnv(signal_length=10_000, window_size=1000, mode="train", noise_model_path=NOISE_MODEL_PATH))
+eval_env = Monitor(NoiseReductionEnv(signal_length=10_000, window_size=1000, mode="train", noise_model_path=NOISE_MODEL_PATH))
 check_env(train_env, warn=True)
 
 log_path = os.path.join('Training', 'Logs')
@@ -30,22 +35,22 @@ os.makedirs("../models", exist_ok=True)
 model = SAC("MlpPolicy", train_env, verbose=1, seed=seed) #tensorboard_log=log_path
 eval_callback = EvalCallback(
     eval_env,
-    # was 'models/...' -- relative to cwd, so it landed in a stray
-    # RL-EnvConfig/models/ instead of the top-level models/ everything
-    # else (inference.py etc.) expects. Matched to model.save()'s '../models/' below.
-    best_model_save_path=f'../models/best_model_{timestamp_str}_{TIMESTEPS}',
+    best_model_save_path=f'../models/best_model_UN_{timestamp_str}_{TIMESTEPS}',
     #log_path='Training/Logs',
     eval_freq=1000,
     n_eval_episodes=3,
     deterministic=True,
     render=False
 )
-checkpoint_callback = CheckpointCallback(save_freq=1000, save_path='../models/', name_prefix='sac_checkpoint')
+# distinct name_prefix from train_sb.py's 'sac_checkpoint' -- the top-level
+# models/ folder already has old sac_checkpoint_*_steps.zip files from a
+# prior historical run; reusing that prefix here would silently overwrite them.
+checkpoint_callback = CheckpointCallback(save_freq=1000, save_path='../models/', name_prefix='un_sac_checkpoint')
 
 model.learn(total_timesteps=TIMESTEPS, callback=[eval_callback, checkpoint_callback])
 
-model.save(f"../models/OFT_W1000_RR_{timestamp_str}_{TIMESTEPS}")
-print("Model saved to 'models/sac_noise_reduction'")
+model.save(f"../models/UN_W1000_{timestamp_str}_{TIMESTEPS}")
+print("Model saved to 'models/UN_W1000_...'")
 
 mean_reward, std_reward = evaluate_policy(model, eval_env, n_eval_episodes=10, return_episode_rewards=False)
 print(f"Mean reward: {mean_reward} ± {std_reward}")

@@ -27,8 +27,8 @@ def find_latest_signal_csv(data_dir):
 
 
 def load_signal_data(csv_path):
-    df = pd.read_csv(csv_path)
-    required_cols = {"sample_index", "clean_signal", "noisy_signal", "filtered_signal"}
+    df = pd.read_csv(csv_path).rename(columns={'Index': 'sample_index', 'Clean Signal': 'clean_signal', 'Noisy Signal':'noisy_signal'})
+    required_cols = {"sample_index", "clean_signal", "noisy_signal"}
     missing = required_cols - set(df.columns)
     if missing:
         raise ValueError(f"CSV is missing expected columns: {missing}")
@@ -60,7 +60,7 @@ def plot_signals(df, start=None, end=None, save_path=None):
     x = df["sample_index"]
     clean = df["clean_signal"].to_numpy()
     noisy = df["noisy_signal"].to_numpy()
-    filtered = df["filtered_signal"].to_numpy()
+    #filtered = df["filtered_signal"].to_numpy()
 
     print("clean")
     # Duplicate-row hypothesis: consecutive rows equal
@@ -78,9 +78,9 @@ def plot_signals(df, start=None, end=None, save_path=None):
     print(df["noisy_signal"].value_counts())
 
     snr_before = compute_snr(clean, noisy)
-    snr_after = compute_snr(clean, filtered)
+    #snr_after = compute_snr(clean, filtered)
 
-    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
 
     axes[0].plot(x, clean, color="black", linewidth=1)
     axes[0].set_title("Clean (reference) Signal")
@@ -90,11 +90,11 @@ def plot_signals(df, start=None, end=None, save_path=None):
     axes[1].set_title(f"Noisy Signal  (SNR = {snr_before:.2f} dB)")
     axes[1].set_ylabel("Amplitude")
 
-    axes[2].plot(x, filtered, color="tab:blue", linewidth=1)
-    axes[2].set_title(f"Filtered (Denoised) Signal  (SNR = {snr_after:.2f} dB, "
-                       f"Improvement = {snr_after - snr_before:.2f} dB)")
-    axes[2].set_ylabel("Amplitude")
-    axes[2].set_xlabel("Sample Index")
+    # axes[2].plot(x, filtered, color="tab:blue", linewidth=1)
+    # axes[2].set_title(f"Filtered (Denoised) Signal  (SNR = {snr_after:.2f} dB, "
+    #                    f"Improvement = {snr_after - snr_before:.2f} dB)")
+    # axes[2].set_ylabel("Amplitude")
+    # axes[2].set_xlabel("Sample Index")
 
     for ax in axes:
         ax.grid(True, alpha=0.3)
@@ -105,8 +105,8 @@ def plot_signals(df, start=None, end=None, save_path=None):
     fig2, ax2 = plt.subplots(figsize=(14, 5))
     ax2.plot(x, noisy, color="tab:red", linewidth=0.7, label="Noisy")
     ax2.plot(x, clean, color="black", alpha=0.4, linewidth=1.2, label="Clean")
-    ax2.plot(x, filtered, color="tab:blue", alpha=0.5, linewidth=1.2, label="Filtered", linestyle="--")
-    ax2.set_title("Overlay: Clean vs Noisy vs Filtered")
+    #ax2.plot(x, filtered, color="tab:blue", alpha=0.5, linewidth=1.2, label="Filtered", linestyle="--")
+    ax2.set_title("Overlay: Clean vs Noisy")
     ax2.set_xlabel("Sample Index")
     ax2.set_ylabel("Amplitude")
     ax2.legend()

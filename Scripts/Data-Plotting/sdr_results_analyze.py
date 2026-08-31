@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 #csv_path = r"D:\signal.csv"
-csv_path = "/Users/imanq/Documents/Programs/GitHub/ASTRA-GeneralRepo/Data/flight_signal_2.csv"
+csv_path = r"c:\Users\imanq\Documents\Programs\GitHub\ASTRA-GeneralRepo\Data\flight_signal_1.csv"
 chunksize = 200_000
 downsample_factor = 200
 
@@ -66,4 +66,5 @@ plt.plot(x, df["RX Imag"], color="green")
 plt.title("RX Imag"); plt.grid()
 
 plt.tight_layout()
+plt.savefig("sdr_results_flight_signal_1.png", dpi=150)
 plt.show()

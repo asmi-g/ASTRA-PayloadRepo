@@ -19,52 +19,87 @@ custom_objects = {
     "clip_range": lambda x: 0.02
 }
 
+MODEL_NAME = os.environ.get("INFER_MODEL_NAME", "UN_W1000_20260824_151201_100000")
+
 script_dir = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.normpath(os.path.join(script_dir, "../models/OFT_W10_080725_6AM_05_125_075.zip"))
-#model_path = os.path.normpath(os.path.join(script_dir, "../models/best_model_20260816_161412_100000/BFT_W1000_081626_6PM"))
+model_path = os.path.normpath(os.path.join(script_dir, f"../models/{MODEL_NAME}.zip"))
 model = SAC.load(model_path, custom_objects=custom_objects)
 
-BASE_DIR = "/Users/imanq/Documents/Programs/GitHub/ASTRA-GeneralRepo/"
+BASE_DIR = os.path.normpath(os.path.join(script_dir, ".."))
 DATA_DIR = os.path.join(BASE_DIR, "Data/")
 
-# --- NEW: single switch to change data source. Nothing else needs to change. ---
-# "flight"    -> uses TX/RX Real+Imag columns, runs alignment + shared scaling
+# --- single switch to change data source. Nothing else needs to change. ---
+# "flight"    -> reads raw TX/RX Real+Imag columns and reconstructs the
+#                complex clean/noisy signal live, the way a deployed system
+#                actually would during a real flight (it doesn't have the
+#                luxury of the pre-built, already-aligned CSV build_clean_noisy.py
+#                produces offline). Alignment (CFO/gain/DC-offset) is estimated
+#                from a trailing calibration window and periodically
+#                re-estimated as new data arrives -- see RECAL_INTERVAL below --
+#                rather than fit once for the whole file, since flight_signal_1
+#                is actually 34 stitched captures with independent oscillator
+#                drift per segment (task 1) and a real deployed receiver has no
+#                advance knowledge of where those boundaries fall.
 # "simulated" -> uses pre-built "Clean Signal"/"Noisy Signal" columns directly,
-#                no alignment or scaling needed (simulator already emits a
-#                matched, comparable-scale clean/noisy pair)
-DATA_SOURCE = "simulated"  # "flight" or "simulated"
+#                no alignment needed (the simulator already emits a matched,
+#                comparable-scale clean/noisy pair).
+DATA_SOURCE = os.environ.get("INFER_DATA_SOURCE", "un_sim")  # "flight", "simulated", or "un_sim"
 
 if DATA_SOURCE == "simulated":
-    csv_path = "/Users/imanq/Downloads/simulated_signal_data.csv"
+    csv_path = os.path.join(DATA_DIR, "simulated_signal_match_hz.csv")
     RUN_TAG = "sim"
+elif DATA_SOURCE == "un_sim":
+    # UN's own in-distribution validation signal (generate_un_validation_signal.py):
+    # same block-bootstrap + severity-rescaled noise model UN was trained on, not
+    # the original synthetic model "simulated" uses. Loading logic below treats
+    # this identically to "simulated" (pre-built real-valued columns, no alignment).
+    csv_path = os.path.join(DATA_DIR, "simulated_signal_un_noise_model.csv")
+    RUN_TAG = "un_sim"
 else:
-    csv_path = os.path.join(DATA_DIR, "flight_signal_2.csv")
-    RUN_TAG = "fs2"
+    csv_path = os.path.join(DATA_DIR, "flight_signal_1.csv")
+    RUN_TAG = "fs1"
 
-RESULTS_PATH = os.path.join(DATA_DIR, f"{timestamp_str}_{RUN_TAG}_results_OFT_W10_080725_6AM_05_125_075.csv")
-SIGNAL_PATH = os.path.join(DATA_DIR, f"{timestamp_str}_{RUN_TAG}_signal_OFT_W10_080725_6AM_05_125_075.csv")
+RESULTS_PATH = os.path.join(DATA_DIR, f"{timestamp_str}_{RUN_TAG}_results_{MODEL_NAME}.csv")
+SIGNAL_PATH = os.path.join(DATA_DIR, f"{timestamp_str}_{RUN_TAG}_signal_{MODEL_NAME}.csv")
 
-def estimate_alignment(tx, rx, fs, f0_nominal=100_000):
+def estimate_alignment(tx, rx, fs, search_hz=50_000):
+    # Matches build_clean_noisy.py's per-segment alignment logic (see task 1):
+    # - DC offset is estimated and removed before anything else. Real hardware
+    #   IQ commonly carries a constant complex offset (LO self-mixing); left
+    #   in, it dominates any power-based statistic without being real noise.
+    # - CFO is estimated from the TX*conj(RX) beat frequency (a matched-filter
+    #   style approach), not RX's own raw spectrum -- the real flight RX often
+    #   has no visible peak in its own spectrum at all (task 1), so searching
+    #   RX directly is searching mostly noise.
+    # search_hz=50kHz is a general placeholder (both TX and RX are HackRFs;
+    # ~20ppm stock TCXO tolerance at a 2.4GHz carrier gives a worst-case
+    # combined offset around 96kHz, so 50kHz is a middle-ground estimate),
+    # NOT fit to this flight's observed CFO -- TODO: replace with the actual
+    # oscillator tolerance spec for these units once confirmed with the
+    # hardware lead, then re-run inference with the corrected value.
     n = min(len(tx), len(rx))
     tx, rx = tx[:n], rx[:n]
 
-    RX_F = np.fft.fft(rx * np.hanning(n))
+    dc_hat = complex(np.median(rx.real), np.median(rx.imag))
+    rx = rx - dc_hat
+
+    beat = rx * np.conj(tx)
+    beat_f = np.fft.fft(beat * np.hanning(n))
     freqs = np.fft.fftfreq(n, d=1/fs)
-    mask = np.abs(freqs - f0_nominal) < 5000
-    f0_actual = freqs[mask][np.argmax(np.abs(RX_F[mask]))]
-    df_hat = f0_actual - f0_nominal
+    mask = np.abs(freqs) < search_hz
+    df_hat = freqs[mask][np.argmax(np.abs(beat_f[mask]))]
 
     t = np.arange(n) / fs
-    rx_corrected = rx * np.exp(-1j * 2 * np.pi * df_hat * t)
-    A_hat = np.vdot(tx, rx_corrected) / np.vdot(tx, tx)
+    tx_cfo = tx * np.exp(1j * 2 * np.pi * df_hat * t)
+    A_hat = np.vdot(tx_cfo, rx) / np.vdot(tx_cfo, tx_cfo)
 
     # robust scale: fit on RX only, using a high percentile instead of max() so a single spike (e.g. the -0.35 outlier in the RX Real plot) doesn't compress every other sample toward zero
     scale = np.percentile(np.abs(rx), 99.5)
     if scale == 0:
-        aligned_clean_calib = (A_hat * tx * np.exp(1j * 2 * np.pi * df_hat * t))
+        aligned_clean_calib = A_hat * tx_cfo
         scale = np.percentile(np.abs(aligned_clean_calib), 99.5) or 1.0
 
-    return {"df_hat": df_hat, "A_hat": A_hat, "fs": fs, "scale": scale}
+    return {"df_hat": df_hat, "A_hat": A_hat, "dc_hat": dc_hat, "fs": fs, "scale": scale}
 
 def apply_alignment(tx_window, params, n_start_idx):
     df_hat, A_hat, fs = params["df_hat"], params["A_hat"], params["fs"]
@@ -126,13 +161,30 @@ def save_signal_data():
         print(f"[ERROR] Could not save signal data: {e}")
 
 # Parameters
-window_size = 10
-stride = 1
-CALIB_SIZE = 20_000        # samples used to estimate df/A/scale once (flight mode only)
-if RUN_TAG == "sim":
-    CALIB_SIZE = 1000
+window_size = 1000  # MUST match the trained model's window_size (OFT/UN both use 1000)
+# stride == window_size: non-overlapping. flight_signal_1_clean_noisy.csv is
+# 17M samples; stride=1 would mean ~17M individual model.predict() calls
+# (many hours). Non-overlapping windows cover the entire file in ~17,000
+# predictions while still reconstructing every sample exactly once.
+stride = 100
+# CALIB_SIZE=20_000 for flight (matches build_clean_noisy.py's calibration
+# window -- real per-segment CFO/gain estimation needs this many samples to
+# be reliable at flight's severity); simulated mode only needs a scale
+# estimate, 1000 samples is plenty.
+CALIB_SIZE = 20_000 if DATA_SOURCE == "flight" else 1_000
+# Re-run calibration every RECAL_INTERVAL samples using a trailing CALIB_SIZE
+# window ending at the current position, rather than fitting once for the
+# whole file. This is segment-agnostic: it tracks oscillator drift whether it
+# happens at a hard segment restart or gradually within what looks like one
+# continuous stretch, without needing to detect segment boundaries in
+# advance. 50,000 (10x per real segment's ~500,000 samples) was chosen to
+# react reasonably quickly without recalibrating so often it's wasteful;
+# not tied to the real data's specific segment length, since a live system
+# processing a genuinely new capture wouldn't know that in advance.
+RECAL_INTERVAL = 100_000
 SAMP_RATE = 1_000_000    # matches TX.py / RX.py samp_rate
 alignment_params = None  # initialize this above the outer while(1) loop, alongside last_processed_index
+next_recal_index = None  # set once the first calibration completes
 
 # Initialize environment
 env = NoiseReductionEnv(window_size=window_size)
@@ -166,12 +218,13 @@ while (1):
     # Load the latest CSV
     try:
         df = pd.read_csv(csv_path)
-        if DATA_SOURCE == "simulated":
-            # --- simulated CSV already has real-valued, comparable-scale columns ---
+        if DATA_SOURCE != "flight":
+            # --- "simulated"/"un_sim" CSVs already have real-valued, comparable-scale columns ---
             df['Clean Signal'] = df['Clean Signal'].astype(np.float64)
             df['Noisy Signal'] = df['Noisy Signal'].astype(np.float64)
         else:
-            # --- flight CSV: build complex IQ, alignment happens later ---
+            # --- flight CSV: build complex IQ live from raw TX/RX columns,
+            # exactly as a deployed receiver would; alignment happens below ---
             df['Clean Signal'] = df['TX Real'] + 1j * df['TX Imag']
             df['Noisy Signal'] = df['RX Real'] + 1j * df['RX Imag']
     except (pd.errors.EmptyDataError, FileNotFoundError):
@@ -187,24 +240,21 @@ while (1):
         continue
 
     if alignment_params is None:
-        if DATA_SOURCE == "simulated":
-            if len(df) < CALIB_SIZE:
-                print("Waiting for enough data to calibrate scale...")
-                time.sleep(poll_interval)
-                continue
+        if len(df) < CALIB_SIZE:
+            print("Waiting for enough data to calibrate...")
+            time.sleep(poll_interval)
+            continue
+        if DATA_SOURCE != "flight":
             clean_calib = df['Clean Signal'].to_numpy()[:CALIB_SIZE]
             noisy_calib = df['Noisy Signal'].to_numpy()[:CALIB_SIZE]
             scale = max(np.max(np.abs(clean_calib)), np.max(np.abs(noisy_calib)))
             alignment_params = {"df_hat": 0.0, "A_hat": 1.0 + 0j, "fs": SAMP_RATE, "scale": scale}
-            print(f"[INFO] Simulated mode -- calibrated scale from first {CALIB_SIZE} samples: {alignment_params}")
         else:
-            if len(df) < CALIB_SIZE:
-                print("Waiting for enough data to calibrate alignment...")
-                time.sleep(poll_interval)
-                continue
             tx_calib = df['Clean Signal'].to_numpy()[:CALIB_SIZE]
             rx_calib = df['Noisy Signal'].to_numpy()[:CALIB_SIZE]
             alignment_params = estimate_alignment(tx_calib, rx_calib, SAMP_RATE)
+            next_recal_index = (CALIB_SIZE - 1) + RECAL_INTERVAL
+        print(f"[INFO] initial calibration from first {CALIB_SIZE} samples: {alignment_params}")
 
     # Check for new data
     if last_processed_index >= len(df):
@@ -222,9 +272,21 @@ while (1):
     while last_processed_index <= len(df) - 1:
         i = last_processed_index
 
+        # Periodic recalibration (flight mode only): re-estimate alignment
+        # from a trailing CALIB_SIZE window ending at the current position,
+        # rather than relying on the fit from the very start of the file.
+        if DATA_SOURCE == "flight" and i >= next_recal_index:
+            calib_start = max(0, i - CALIB_SIZE + 1)
+            tx_calib = df['Clean Signal'].to_numpy()[calib_start:i + 1]
+            rx_calib = df['Noisy Signal'].to_numpy()[calib_start:i + 1]
+            alignment_params = estimate_alignment(tx_calib, rx_calib, SAMP_RATE)
+            next_recal_index = i + RECAL_INTERVAL
+            print(f"[INFO] recalibrated at sample {i}: df_hat={alignment_params['df_hat']:.1f}Hz "
+                  f"|A_hat|={abs(alignment_params['A_hat']):.4g} scale={alignment_params['scale']:.4g}")
+
         start = i - window_size + 1
 
-        if DATA_SOURCE == "simulated":
+        if DATA_SOURCE != "flight":
             # --- direct slice, no alignment/scaling needed ---
             win_clean = df.iloc[start:i + 1]["Clean Signal"].to_numpy().astype(np.float64)
             win_noisy = df.iloc[start:i + 1]["Noisy Signal"].to_numpy().astype(np.float64)
@@ -233,18 +295,22 @@ while (1):
                 win_clean = win_clean / scale
                 win_noisy = win_noisy / scale
         else:
-            # --- flight signal: unchanged calculation from before ---
+            # --- flight: reconstruct the aligned clean reference from TX,
+            # and remove the calibrated DC offset from RX, using whichever
+            # alignment_params is currently active (initial or most recent
+            # recalibration). ---
             win_tx_complex = df.iloc[start:i + 1]["Clean Signal"].to_numpy()
             win_rx_complex = df.iloc[start:i + 1]["Noisy Signal"].to_numpy()
 
             win_clean_complex = apply_alignment(win_tx_complex, alignment_params, n_start_idx=start)
+            win_noisy_complex = win_rx_complex - alignment_params["dc_hat"]
 
             win_clean = win_clean_complex.real
-            win_noisy = win_rx_complex.real
+            win_noisy = win_noisy_complex.real
 
-            # scale clean and noisy by the SAME factor (computed once at calibration)
-            # so their ratio -- the real SNR -- is preserved, rather than each being
-            # normalized independently.
+            # scale clean and noisy by the SAME factor so their ratio -- the
+            # real SNR -- is preserved, rather than each being normalized
+            # independently.
             scale = alignment_params["scale"]
             if scale > 0:
                 win_clean = win_clean / scale
