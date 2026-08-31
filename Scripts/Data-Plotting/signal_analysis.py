@@ -6,7 +6,7 @@ by inference.py's signal-reconstruction export, i.e. files named like:
 
     Data/20260816_121659_fs1_signal_ws10s1.csv
 
-with columns: sample_index, clean_signal, noisy_signal, filtered_signal
+with columns: Index, Clean Signal, Noisy Signal, filtered_signal
 
 These files already contain aligned, jointly-scaled, real-valued clean/noisy
 signals (see inference.py: estimate_alignment + apply_alignment), so no
@@ -23,12 +23,12 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import signal
-from scipy.stats import kurtosis, skew, normaltest, kstest, norm
+from scipy.stats import kurtosis, skew, normaltest, kstest, ks_2samp, wasserstein_distance, norm
 import warnings
 warnings.filterwarnings('ignore')
 
 # ── Config ────────────────────────────────────────────────────────────────
-FLIGHT_CSV = "C:/Users/imanq/Documents/Programs/GitHub/ASTRA-GeneralRepo/Data/20260816_121659_fs1_signal_ws10s1.csv"
+FLIGHT_CSV = "C:/Users/imanq/Documents/Programs/GitHub/ASTRA-GeneralRepo/Data/flight_signal_2_clean_noisy.csv"
 SIMULATED_CSV = "C:/Users/imanq/Downloads/simulated_signal_data.csv"
 COMPARE_TO_SIMULATED = True   # set False to only analyze FLIGHT_CSV
 
@@ -40,10 +40,14 @@ OUTPUT_PREFIX = "signal_analysis"
 # ── Loading ──────────────────────────────────────────────────────────────
 def load_signal_csv(path):
     """Load an inference.py signal-reconstruction CSV, dedupe/sort by
-    sample_index (multiple save_signal_data() flushes can append out of
-    order or overlap slightly if the script was interrupted/restarted)."""
+    Index (multiple save_signal_data() flushes can append out of
+    order or overlap slightly if the script was interrupted/restarted).
+    If the file has no Index column, one is added (0..n-1) based
+    on row order before any dedup/sort logic runs."""
     df = pd.read_csv(path)
-    df = df.drop_duplicates(subset='sample_index').sort_values('sample_index').reset_index(drop=True)
+    if 'Index' not in df.columns:
+        df['Index'] = np.arange(len(df))
+    df = df.drop_duplicates(subset='Index').sort_values('Index').reset_index(drop=True)
     return df
 
 
@@ -155,12 +159,37 @@ def spectral_stats(noise, nperseg=1024):
 def autocorrelation(noise, max_lag=20):
     return [np.corrcoef(noise[:-lag], noise[lag:])[0, 1] for lag in range(1, max_lag + 1)]
 
+def compare_noise_distributions(noise_a, noise_b, label_a="Flight", label_b="Simulated"):
+    """Direct statistical distance between two noise samples (not vs. Gaussian)."""
+    ks_stat, ks_p = ks_2samp(noise_a, noise_b)
+    w_dist = wasserstein_distance(noise_a, noise_b)  # "earth mover's distance", same units as the signal
+
+    return {
+        "ks_stat": ks_stat,       # 0 = identical distributions, up to 1 = fully separated
+        "ks_p": ks_p,             # p < 0.05 -> distributions are statistically distinguishable
+        "wasserstein": w_dist,    # avg amount of "mass" you'd have to move to turn one dist into the other
+        "std_ratio": noise_a.std() / noise_b.std(),
+        "kurtosis_diff": kurtosis(noise_a) - kurtosis(noise_b),
+    }
+
+
+def compare_spectra(psd_a, freqs_a, psd_b, freqs_b):
+    """Spectral distance -- interpolate onto a shared frequency grid, then
+    compare log-power at each frequency."""
+    common_freqs = np.linspace(max(freqs_a[1], freqs_b[1]), min(freqs_a[-1], freqs_b[-1]), 200)
+    log_a = np.interp(common_freqs, freqs_a, np.log10(psd_a + 1e-12))
+    log_b = np.interp(common_freqs, freqs_b, np.log10(psd_b + 1e-12))
+    return {
+        "mean_log_power_gap_db": 10 * np.mean(log_a - log_b),  # avg dB difference across spectrum
+        "rmse_log_power": np.sqrt(np.mean((log_a - log_b) ** 2)),
+    }
+
 
 # ── Full analysis pipeline for one signal file ──────────────────────────
 def analyze_signal(csv_path, label):
     df = load_signal_csv(csv_path)
-    clean = df['clean_signal'].to_numpy(dtype=np.float64)
-    noisy = df['noisy_signal'].to_numpy(dtype=np.float64)
+    clean = df['Clean Signal'].to_numpy(dtype=np.float64)
+    noisy = df['Noisy Signal'].to_numpy(dtype=np.float64)
     filtered = df['filtered_signal'].to_numpy(dtype=np.float64) if 'filtered_signal' in df.columns else None
 
     noise = noisy - clean
@@ -270,7 +299,21 @@ def print_comparison(flight, sim):
     gap = flight['snr_raw_db'] - sim['snr_raw_db']
     print(f"\n  SNR gap (flight − simulated): {gap:.2f} dB")
     print(f"  → the flight environment is ~{abs(gap):.1f} dB harder than the simulator's validation case.")
-    print()
+    dist_cmp = compare_noise_distributions(flight['noise'], sim['noise'])
+    spec_cmp = compare_spectra(flight['spectral']['psd'], flight['spectral']['freqs'],
+                                sim['spectral']['psd'], sim['spectral']['freqs'])
+
+    print("\n-- Direct Distribution Distance (Flight vs Simulated) --")
+    print(f"  KS statistic:        {dist_cmp['ks_stat']:.4f}  (0=identical, 1=fully separated)")
+    print(f"  KS p-value:          {dist_cmp['ks_p']:.2e}  "
+          f"({'DISTINGUISHABLE' if dist_cmp['ks_p'] < 0.05 else 'not statistically distinguishable'})")
+    print(f"  Wasserstein distance: {dist_cmp['wasserstein']:.4f}")
+    print(f"  Std ratio (flight/sim): {dist_cmp['std_ratio']:.2f}x")
+    print(f"  Kurtosis gap:          {dist_cmp['kurtosis_diff']:.2f}")
+
+    print("\n-- Direct Spectral Distance --")
+    print(f"  Mean log-power gap:  {spec_cmp['mean_log_power_gap_db']:.2f} dB")
+    print(f"  RMSE (log power):    {spec_cmp['rmse_log_power']:.4f}")
 
 
 # ── Plotting ─────────────────────────────────────────────────────────────

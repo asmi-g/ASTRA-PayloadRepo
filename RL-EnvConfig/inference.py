@@ -20,8 +20,8 @@ custom_objects = {
 }
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-#model_path = os.path.normpath(os.path.join(script_dir, "../models/OFT_W10_080725_6AM"))
-model_path = os.path.normpath(os.path.join(script_dir, "../models/best_model_20260816_161412_100000/BFT_W1000_081626_6PM"))
+model_path = os.path.normpath(os.path.join(script_dir, "../models/OFT_W10_080725_6AM_05_125_075.zip"))
+#model_path = os.path.normpath(os.path.join(script_dir, "../models/best_model_20260816_161412_100000/BFT_W1000_081626_6PM"))
 model = SAC.load(model_path, custom_objects=custom_objects)
 
 BASE_DIR = "/Users/imanq/Documents/Programs/GitHub/ASTRA-GeneralRepo/"
@@ -32,7 +32,7 @@ DATA_DIR = os.path.join(BASE_DIR, "Data/")
 # "simulated" -> uses pre-built "Clean Signal"/"Noisy Signal" columns directly,
 #                no alignment or scaling needed (simulator already emits a
 #                matched, comparable-scale clean/noisy pair)
-DATA_SOURCE = "flight"  # "flight" or "simulated"
+DATA_SOURCE = "simulated"  # "flight" or "simulated"
 
 if DATA_SOURCE == "simulated":
     csv_path = "/Users/imanq/Downloads/simulated_signal_data.csv"
@@ -41,8 +41,8 @@ else:
     csv_path = os.path.join(DATA_DIR, "flight_signal_2.csv")
     RUN_TAG = "fs2"
 
-RESULTS_PATH = os.path.join(DATA_DIR, f"{timestamp_str}_{RUN_TAG}_results_ws1000s10_BFT_save.csv")
-SIGNAL_PATH = os.path.join(DATA_DIR, f"{timestamp_str}_{RUN_TAG}_signal_ws1000s10_BFT_save.csv")
+RESULTS_PATH = os.path.join(DATA_DIR, f"{timestamp_str}_{RUN_TAG}_results_OFT_W10_080725_6AM_05_125_075.csv")
+SIGNAL_PATH = os.path.join(DATA_DIR, f"{timestamp_str}_{RUN_TAG}_signal_OFT_W10_080725_6AM_05_125_075.csv")
 
 def estimate_alignment(tx, rx, fs, f0_nominal=100_000):
     n = min(len(tx), len(rx))
@@ -58,10 +58,11 @@ def estimate_alignment(tx, rx, fs, f0_nominal=100_000):
     rx_corrected = rx * np.exp(-1j * 2 * np.pi * df_hat * t)
     A_hat = np.vdot(tx, rx_corrected) / np.vdot(tx, tx)
 
-    # --- robust scale: guards against saturation regardless of which
-    # signal (clean or noisy) happens to be larger ---
-    aligned_clean_calib = (A_hat * tx * np.exp(1j * 2 * np.pi * df_hat * t)).real
-    scale = max(np.max(np.abs(aligned_clean_calib)), np.max(np.abs(rx.real)))
+    # robust scale: fit on RX only, using a high percentile instead of max() so a single spike (e.g. the -0.35 outlier in the RX Real plot) doesn't compress every other sample toward zero
+    scale = np.percentile(np.abs(rx), 99.5)
+    if scale == 0:
+        aligned_clean_calib = (A_hat * tx * np.exp(1j * 2 * np.pi * df_hat * t))
+        scale = np.percentile(np.abs(aligned_clean_calib), 99.5) or 1.0
 
     return {"df_hat": df_hat, "A_hat": A_hat, "fs": fs, "scale": scale}
 
@@ -125,9 +126,11 @@ def save_signal_data():
         print(f"[ERROR] Could not save signal data: {e}")
 
 # Parameters
-window_size = 1000
-stride = 10
-CALIB_SIZE = 1000        # samples used to estimate df/A/scale once (flight mode only)
+window_size = 10
+stride = 1
+CALIB_SIZE = 20_000        # samples used to estimate df/A/scale once (flight mode only)
+if RUN_TAG == "sim":
+    CALIB_SIZE = 1000
 SAMP_RATE = 1_000_000    # matches TX.py / RX.py samp_rate
 alignment_params = None  # initialize this above the outer while(1) loop, alongside last_processed_index
 
@@ -135,7 +138,7 @@ alignment_params = None  # initialize this above the outer while(1) loop, alongs
 env = NoiseReductionEnv(window_size=window_size)
 
 poll_interval = 2      # seconds between polls
-timeout_seconds = 30   # time to wait for new data before exiting
+timeout_seconds = 10   # time to wait for new data before exiting
 
 # Tracking
 actions = []

@@ -103,9 +103,9 @@ def plot_signals(df, start=None, end=None, save_path=None):
 
     # Overlay comparison plot
     fig2, ax2 = plt.subplots(figsize=(14, 5))
-    ax2.plot(x, noisy, color="tab:red", alpha=0.4, linewidth=0.7, label="Noisy")
-    #ax2.plot(x, clean, color="black", linewidth=1.2, label="Clean")
-    ax2.plot(x, filtered, color="tab:blue", linewidth=1.2, label="Filtered", linestyle="--")
+    ax2.plot(x, noisy, color="tab:red", linewidth=0.7, label="Noisy")
+    ax2.plot(x, clean, color="black", alpha=0.4, linewidth=1.2, label="Clean")
+    ax2.plot(x, filtered, color="tab:blue", alpha=0.5, linewidth=1.2, label="Filtered", linestyle="--")
     ax2.set_title("Overlay: Clean vs Noisy vs Filtered")
     ax2.set_xlabel("Sample Index")
     ax2.set_ylabel("Amplitude")

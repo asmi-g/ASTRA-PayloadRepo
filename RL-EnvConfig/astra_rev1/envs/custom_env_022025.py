@@ -9,7 +9,7 @@ class NoiseReductionEnv(gym.Env):
         assert mode in ("train", "inference"), f"mode must be 'train' or 'inference', got {mode}"
         self.mode = mode
         self.window_size = window_size
-        self.signal_length = np.random.randint(signal_length/5, signal_length)
+        self.signal_length = np.random.randint(signal_length/5, signal_length*2)
         self.denoiser = StatelessDenoisingEnv(window_size=window_size)
         self.reward_history = []
         self.observation_space = self.denoiser.observation_space
@@ -17,7 +17,6 @@ class NoiseReductionEnv(gym.Env):
 
     def reset(self, clean_signal=None, noisy_signal=None):
         if self.mode == "train":
-            self.signal_length = np.random.randint(2000, 10000)
             if clean_signal is not None and noisy_signal is not None:
                 self.clean = clean_signal.astype(np.float64)
                 self.noisy = noisy_signal.astype(np.float64)
@@ -90,7 +89,8 @@ class NoiseReductionEnv(gym.Env):
         _, reward, _, info = self.denoiser.step(noisy_window, action, clean_window)
 
         if self.mode == "train":
-            self.t += 1  # advance through the signal during training
+            self.t += 10
+            self.t = min(self.t, len(self.noisy) - self.window_size)
 
         self.reward_history.append(reward)
 
