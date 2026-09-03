@@ -29,40 +29,46 @@ BASE_DIR = os.path.normpath(os.path.join(script_dir, ".."))
 DATA_DIR = os.path.join(BASE_DIR, "Data/")
 
 # --- single switch to change data source. Nothing else needs to change. ---
-# "flight"    -> reads raw TX/RX Real+Imag columns and reconstructs the
-#                complex clean/noisy signal live, the way a deployed system
-#                actually would during a real flight (it doesn't have the
-#                luxury of the pre-built, already-aligned CSV build_clean_noisy.py
-#                produces offline). Alignment (CFO/gain/DC-offset) is estimated
-#                from a trailing calibration window and periodically
-#                re-estimated as new data arrives -- see RECAL_INTERVAL below --
-#                rather than fit once for the whole file, since flight_signal_1
-#                is actually 34 stitched captures with independent oscillator
-#                drift per segment (task 1) and a real deployed receiver has no
-#                advance knowledge of where those boundaries fall.
-# "simulated" -> uses pre-built "Clean Signal"/"Noisy Signal" columns directly,
-#                no alignment needed (the simulator already emits a matched,
-#                comparable-scale clean/noisy pair).
-DATA_SOURCE = os.environ.get("INFER_DATA_SOURCE", "un_sim")  # "flight", "simulated", or "un_sim"
+#   "flight"  -> reads raw TX/RX Real+Imag columns and reconstructs the complex
+#               clean/noisy signal live, the way a deployed system actually
+#               would during a real flight (no access to the pre-built,
+#               already-aligned CSV build_clean_noisy.py produces offline).
+#               Alignment (CFO/gain/DC-offset) is estimated from a trailing
+#               calibration window and periodically re-estimated as new data
+#               arrives (see RECAL_INTERVAL), since flight_signal_1 is 34
+#               stitched captures with independent oscillator drift per segment
+#               and a deployed receiver has no advance knowledge of where those
+#               boundaries fall.
+#   everything else -> pre-built real-valued "Clean Signal"/"Noisy Signal"
+#               columns used directly, no alignment (the simulator emits a
+#               matched, comparable-scale pair):
+#                 "oan_sim" -> simulated_signal_oan.csv (OAN scheme eval signal)
+#                 "pfn_sim" -> simulated_signal_pfn.csv (PFN scheme eval signal)
+#                 "simulated" / "un_sim" -> legacy pre-flight validation signals
+DATA_SOURCE = os.environ.get("INFER_DATA_SOURCE", "oan_sim")
 
-if DATA_SOURCE == "simulated":
-    csv_path = os.path.join(DATA_DIR, "simulated_signal_match_hz.csv")
-    RUN_TAG = "sim"
-elif DATA_SOURCE == "un_sim":
-    # UN's own in-distribution validation signal (generate_un_validation_signal.py):
-    # same block-bootstrap + severity-rescaled noise model UN was trained on, not
-    # the original synthetic model "simulated" uses. Loading logic below treats
-    # this identically to "simulated" (pre-built real-valued columns, no alignment).
-    csv_path = os.path.join(DATA_DIR, "simulated_signal_un_noise_model.csv")
-    RUN_TAG = "un_sim"
-else:
+_SIM_SOURCES = {
+    "oan_sim":   ("simulated_signal_oan.csv",            "oan_sim"),
+    "pfn_sim":   ("simulated_signal_pfn.csv",            "pfn_sim"),
+    "opbn_sim":  ("simulated_signal_opbn.csv",           "opbn_sim"),
+    "simulated": ("simulated_signal_match_hz.csv",       "sim"),
+    "un_sim":    ("simulated_signal_un_noise_model.csv", "un_sim"),
+}
+
+if DATA_SOURCE == "flight":
     csv_path = os.path.join(DATA_DIR, "flight_signal_1.csv")
     RUN_TAG = "fs1"
+elif DATA_SOURCE in _SIM_SOURCES:
+    _fname, RUN_TAG = _SIM_SOURCES[DATA_SOURCE]
+    csv_path = os.path.join(DATA_DIR, _fname)
+else:
+    raise ValueError(f"unknown DATA_SOURCE {DATA_SOURCE!r}; "
+                     f"expected 'flight' or one of {sorted(_SIM_SOURCES)}")
 
 RESULTS_PATH = os.path.join(DATA_DIR, f"{timestamp_str}_{RUN_TAG}_results_{MODEL_NAME}.csv")
 SIGNAL_PATH = os.path.join(DATA_DIR, f"{timestamp_str}_{RUN_TAG}_signal_{MODEL_NAME}.csv")
 
-def estimate_alignment(tx, rx, fs, search_hz=50_000):
+def estimate_alignment(tx, rx, fs, n0=0, search_hz=30_000):
     # Matches build_clean_noisy.py's per-segment alignment logic (see task 1):
     # - DC offset is estimated and removed before anything else. Real hardware
     #   IQ commonly carries a constant complex offset (LO self-mixing); left
@@ -71,12 +77,26 @@ def estimate_alignment(tx, rx, fs, search_hz=50_000):
     #   style approach), not RX's own raw spectrum -- the real flight RX often
     #   has no visible peak in its own spectrum at all (task 1), so searching
     #   RX directly is searching mostly noise.
-    # search_hz=50kHz is a general placeholder (both TX and RX are HackRFs;
-    # ~20ppm stock TCXO tolerance at a 2.4GHz carrier gives a worst-case
-    # combined offset around 96kHz, so 50kHz is a middle-ground estimate),
-    # NOT fit to this flight's observed CFO -- TODO: replace with the actual
-    # oscillator tolerance spec for these units once confirmed with the
-    # hardware lead, then re-run inference with the corrected value.
+    # - n0 is the ABSOLUTE sample index of this calibration window's first
+    #   sample. The CFO/gain fit here and apply_alignment() below MUST share one
+    #   phase origin. build_clean_noisy.py can reset that origin to 0 per segment
+    #   because it detects segment boundaries offline; a live receiver can't, so
+    #   we anchor the fit at n0 (the window's true position in the stream) and
+    #   apply_alignment() indexes globally to match. Previously the fit always
+    #   used a local origin of 0 while apply_alignment() used the global index,
+    #   so A_hat carried the wrong constant phase after every recalibration
+    #   except the first (which happens to start at n0=0). It only looked
+    #   correct because RECAL_INTERVAL/CALIB_SIZE/fs made that phase land on a
+    #   multiple of 2*pi; sub-bin CFO (below) or any change to those constants
+    #   would have silently rotated -- or sign-flipped -- the clean reference.
+    # search_hz=30kHz matches build_clean_noisy.py's CFO_SEARCH_HZ. TX.py/RX.py
+    # only fix samp_rate=1MHz, center=2.4GHz and the 100kHz baseband tone -- no
+    # oscillator tolerance is specified there. Both units are HackRFs (~20ppm
+    # stock TCXO -> up to ~48kHz each at 2.4GHz worst case), but the observed
+    # per-segment CFO drift in this flight tops out near ~14kHz, so a 30kHz
+    # search band brackets it with margin without opening the search up to
+    # noise peaks tens of kHz away. Revisit if a unit-specific TCXO spec or a
+    # wider observed CFO turns up.
     n = min(len(tx), len(rx))
     tx, rx = tx[:n], rx[:n]
 
@@ -86,10 +106,25 @@ def estimate_alignment(tx, rx, fs, search_hz=50_000):
     beat = rx * np.conj(tx)
     beat_f = np.fft.fft(beat * np.hanning(n))
     freqs = np.fft.fftfreq(n, d=1/fs)
-    mask = np.abs(freqs) < search_hz
-    df_hat = freqs[mask][np.argmax(np.abs(beat_f[mask]))]
+    mag = np.abs(beat_f)
 
-    t = np.arange(n) / fs
+    # coarse peak: nearest FFT bin inside the plausible CFO search band
+    in_band = np.abs(freqs) < search_hz
+    k = int(np.argmax(np.where(in_band, mag, -np.inf)))
+
+    # sub-bin refinement: quadratic interpolation on log-magnitude across the
+    # peak bin and its two neighbours (standard QIFFT for a windowed tone).
+    # Removes the +/- half-bin (fs/n = 50 Hz here) quantization that otherwise
+    # accumulates into a growing phase error across each recalibration interval.
+    # Signal-agnostic: assumes only that one beat tone dominates, not its value.
+    bin_hz = fs / n
+    km1, kp1 = (k - 1) % n, (k + 1) % n
+    a, b, c = np.log(mag[km1] + 1e-20), np.log(mag[k] + 1e-20), np.log(mag[kp1] + 1e-20)
+    denom = a - 2.0 * b + c
+    delta = float(np.clip(0.5 * (a - c) / denom, -0.5, 0.5)) if denom != 0 else 0.0
+    df_hat = freqs[k] + delta * bin_hz
+
+    t = np.arange(n0, n0 + n) / fs
     tx_cfo = tx * np.exp(1j * 2 * np.pi * df_hat * t)
     A_hat = np.vdot(tx_cfo, rx) / np.vdot(tx_cfo, tx_cfo)
 
@@ -162,7 +197,7 @@ def save_signal_data():
 
 # Parameters
 window_size = 1000  # MUST match the trained model's window_size (OFT/UN both use 1000)
-# stride == window_size: non-overlapping. flight_signal_1_clean_noisy.csv is
+# when stride == window_size: non-overlapping. flight_signal_1_clean_noisy.csv is
 # 17M samples; stride=1 would mean ~17M individual model.predict() calls
 # (many hours). Non-overlapping windows cover the entire file in ~17,000
 # predictions while still reconstructing every sample exactly once.
@@ -182,6 +217,17 @@ CALIB_SIZE = 20_000 if DATA_SOURCE == "flight" else 1_000
 # not tied to the real data's specific segment length, since a live system
 # processing a genuinely new capture wouldn't know that in advance.
 RECAL_INTERVAL = 100_000
+# On recalibration, blend the new amplitude-normalization scale with the
+# previous one (EWMA) instead of hard-switching, so the signal level the model
+# sees doesn't step discontinuously every RECAL_INTERVAL. A live receiver's AGC
+# has a time constant for the same reason. This is a scalar level smoother --
+# causal (past scales only) and signal-agnostic (no assumption about frequency
+# or content). df_hat/A_hat/dc_hat are still hard-updated: they track real
+# oscillator drift and lagging them would degrade the (tiny) clean estimate,
+# whereas scale only sets input amplitude. alpha=0.3 -> ~3-recal time constant;
+# trade-off: after a genuine RX-gain change the level is under-corrected for
+# ~1 interval, but clean/noisy share the scale so their SNR ratio is unaffected.
+SCALE_EWMA_ALPHA = 0.3
 SAMP_RATE = 1_000_000    # matches TX.py / RX.py samp_rate
 alignment_params = None  # initialize this above the outer while(1) loop, alongside last_processed_index
 next_recal_index = None  # set once the first calibration completes
@@ -252,7 +298,8 @@ while (1):
         else:
             tx_calib = df['Clean Signal'].to_numpy()[:CALIB_SIZE]
             rx_calib = df['Noisy Signal'].to_numpy()[:CALIB_SIZE]
-            alignment_params = estimate_alignment(tx_calib, rx_calib, SAMP_RATE)
+            # first calibration window starts at absolute sample 0
+            alignment_params = estimate_alignment(tx_calib, rx_calib, SAMP_RATE, n0=0)
             next_recal_index = (CALIB_SIZE - 1) + RECAL_INTERVAL
         print(f"[INFO] initial calibration from first {CALIB_SIZE} samples: {alignment_params}")
 
@@ -279,7 +326,15 @@ while (1):
             calib_start = max(0, i - CALIB_SIZE + 1)
             tx_calib = df['Clean Signal'].to_numpy()[calib_start:i + 1]
             rx_calib = df['Noisy Signal'].to_numpy()[calib_start:i + 1]
-            alignment_params = estimate_alignment(tx_calib, rx_calib, SAMP_RATE)
+            prev_scale = alignment_params["scale"]
+            # n0=calib_start: fit the CFO/gain phase at this window's true
+            # position in the stream, so apply_alignment()'s global index stays
+            # phase-consistent with the fit (see estimate_alignment docstring).
+            alignment_params = estimate_alignment(tx_calib, rx_calib, SAMP_RATE, n0=calib_start)
+            # EWMA the amplitude scale across recals instead of hard-switching
+            alignment_params["scale"] = (
+                SCALE_EWMA_ALPHA * alignment_params["scale"] + (1.0 - SCALE_EWMA_ALPHA) * prev_scale
+            )
             next_recal_index = i + RECAL_INTERVAL
             print(f"[INFO] recalibrated at sample {i}: df_hat={alignment_params['df_hat']:.1f}Hz "
                   f"|A_hat|={abs(alignment_params['A_hat']):.4g} scale={alignment_params['scale']:.4g}")
@@ -332,6 +387,8 @@ while (1):
         snr_filtered = info["SNR_filtered"]
         filt = np.asarray(info["filtered_signal"])  # length == window_size
         t_factor = info["threshold_factor"]
+        sig_loss = info["signal_loss"]
+        corr = info["correlation"]
 
         rewards.append(reward)
         thresholds.append(t_factor)
@@ -364,7 +421,7 @@ while (1):
 
         if counter == 1000:
             counter = 0
-            print(f"Rows {i-window_size, i} | Action: {action} | Reward: {reward:.4f} | SNR Improvement: {snr_improvement[-1]:.2f} | SNR Raw: {snr_raw:.2f} | SNR Filtered: {snr_filtered:.2f} | Done: {done} | filtered signal: {np.mean(filtered_signal_data):.4f} | clean signal: {np.mean(win_clean):.4f} | threshold factor: {t_factor:.4f} | running mean: {running_mean[-1]}")
+            print(f"Rows {i-window_size, i} | Action: {action} | Reward: {reward:.4f} | SNR Improvement: {snr_improvement[-1]:.2f} | SNR Raw: {snr_raw:.2f} | SNR Filtered: {snr_filtered:.2f} | Signal Loss: {sig_loss:.4f} | Correlation: {corr:.4f} | Done: {done} | filtered signal: {np.mean(filtered_signal_data):.4f} | clean signal: {np.mean(win_clean):.4f} | threshold factor: {t_factor:.4f} | running mean: {running_mean[-1]}")
         else:
             counter = counter + 1
 
@@ -373,6 +430,8 @@ while (1):
             "action": action,
             "reward": reward,
             "snr_improvement": snr_improvement[-1],
+            "signal_loss": sig_loss,
+            "correlation": corr,
             "threshold_factor": t_factor,
             "running_mean": running_mean[-1]
         })
@@ -390,6 +449,8 @@ while (1):
                 "action": np.NaN,
                 "reward": np.NaN,
                 "snr_improvement": np.NaN,
+                "signal_loss": np.NaN,
+                "correlation": np.NaN,
                 "threshold_factor": np.NaN
             })
 

@@ -40,6 +40,7 @@ Usage:
     python build_clean_noisy.py /path/to/flight_signal_1.csv
 """
 
+import os
 import sys
 import numpy as np
 import pandas as pd
@@ -49,6 +50,8 @@ F0_NOMINAL = 100_000
 CALIB_LEN = 20_000       # samples used to fit CFO/gain/DC-offset, per segment
 SCALE_PERCENTILE = 99.5  # robust scale, fit on RX (post DC-removal, all segments pooled)
 TIMESTAMP_COL = "Timestamp (ISO)"
+GAP_FILL_PERIOD_S = 10.0  # spacing of explicit zero rows dropped into each inter-segment
+                          # dead gap in the *_gapfilled.csv companion file (viz only)
 CFO_SEARCH_HZ = 30_000   # search window for estimate_cfo -- widened from an earlier 5 kHz
                           # default after finding real per-segment CFO drift up to ~14 kHz
                           # (see build_clean_noisy.py history / paper notes: HackRF TCXO
@@ -161,6 +164,45 @@ def build_clean_noisy(tx, rx, fs=SAMP_RATE, f0_nominal=F0_NOMINAL, calib_len=CAL
     }
 
 
+def build_gap_filled(out_df, segments, period_s=GAP_FILL_PERIOD_S):
+    """Return a copy of out_df with explicit all-zero rows inserted into every
+    inter-segment dead gap, roughly every `period_s` seconds.
+
+    The real-timed out_df represents each dead gap only as a jump in the 'Time'
+    column (segment ends at t=39.99 s, next row is t=60.48 s). A plotter then
+    draws a straight diagonal across the gap, which reads as if signal existed
+    there. These filler rows pin the trace to zero across the gap instead --
+    "the flight is still going, we're just not recording" -- so gaps show as
+    flat dead stretches. This file is a visualization aid only; the RL/analysis
+    pipeline consumes the gap-free *_clean_noisy.csv, not this one.
+    """
+    if segments is None or len(segments) < 2:
+        return out_df.copy(), 0
+
+    t = out_df["Time"].to_numpy()
+    zero_cols = ["Noisy Signal", "Clean Signal", "TX Magnitude", "RX Magntiude"]
+    pieces = []
+    n_filler = 0
+    for k, (start, end) in enumerate(segments):
+        pieces.append(out_df.iloc[start:end])
+        if k == len(segments) - 1:
+            break
+        gap_start = t[end - 1]
+        gap_end = t[segments[k + 1][0]]
+        fill_t = np.arange(gap_start + period_s, gap_end, period_s)
+        if fill_t.size == 0:                       # gap shorter than period_s
+            fill_t = np.array([0.5 * (gap_start + gap_end)])
+        n_filler += fill_t.size
+        filler = pd.DataFrame({"Time": fill_t})
+        for col in zero_cols:
+            filler[col] = 0.0
+        pieces.append(filler.reindex(columns=out_df.columns))
+
+    gf = pd.concat(pieces, ignore_index=True)
+    gf["Index"] = np.arange(len(gf))              # single contiguous index over real + filler rows
+    return gf, n_filler
+
+
 def main(csv_path, out_path=None):
     df = pd.read_csv(csv_path)
 
@@ -172,6 +214,7 @@ def main(csv_path, out_path=None):
                   f"file looks like {len(segment_boundaries)} stitched captures. Fitting "
                   f"CFO/gain/DC-offset independently per segment instead of one global fit.")
 
+    real_time = None  # elapsed-seconds axis taken from the capture's own wall-clock timestamps
     if TIMESTAMP_COL in df.columns:
         df[TIMESTAMP_COL] = pd.to_datetime(df[TIMESTAMP_COL], format="ISO8601")
         if not df[TIMESTAMP_COL].is_monotonic_increasing:
@@ -179,8 +222,19 @@ def main(csv_path, out_path=None):
                   f"invalidate the segment boundaries computed from 'Index'. Skipping sort.")
         # (No sort here: segment boundaries above are computed on file row order;
         # re-sorting afterward would silently desync them from the data.)
+        #
+        # Real time axis: seconds elapsed since the first sample's timestamp. This makes
+        # the output a 1:1 time-domain map of the input -- row i's clean/noisy value sits
+        # at the same wall-clock instant as row i's TX/RX values -- and preserves BOTH the
+        # true capture duration and the multi-second dead gaps between stitched segments
+        # (across a gap 'Time' just jumps forward with no rows in between). The old
+        # np.arange(n)/SAMP_RATE axis silently collapsed the 34 segments + gaps into one
+        # contiguous ~17 s stream.
+        real_time = (df[TIMESTAMP_COL] - df[TIMESTAMP_COL].iloc[0]).dt.total_seconds().to_numpy()
     else:
-        print(f"[WARNING] '{TIMESTAMP_COL}' column not found -- skipping timestamp check.")
+        print(f"[WARNING] '{TIMESTAMP_COL}' column not found -- falling back to synthetic "
+              f"np.arange(n)/SAMP_RATE time axis (real duration and inter-segment gaps NOT "
+              f"preserved).")
 
     if "Index" in df.columns:
         df = df.drop(columns=["Index"])
@@ -205,19 +259,68 @@ def main(csv_path, out_path=None):
         print(f"       {i:>4} {seg['n']:>8} {seg['dc_hat']:>18.6g} {seg['df_hat']:>10.1f} "
               f"{abs(seg['A_hat']):>12.6g} {np.degrees(np.angle(seg['A_hat'])):>10.2f}")
 
+    n_out = result["n"]
+    if real_time is not None:
+        time_axis = real_time[:n_out]
+    else:
+        time_axis = np.arange(n_out) / SAMP_RATE
+
     out_df = pd.DataFrame({
-        "Index": df["Index"].to_numpy()[: result["n"]],
-        "Time": np.arange(result["n"]) / SAMP_RATE,
+        "Index": df["Index"].to_numpy()[:n_out],
+        "Time": time_axis,
         "Noisy Signal": result["noisy_complex"].real,
         "Clean Signal": result["clean_complex"].real,
-        'TX Magnitude': df['TX Magnitude'],
-        'RX Magntiude': df['RX Magnitude']
+        'TX Magnitude': df['TX Magnitude'].to_numpy()[:n_out],
+        'RX Magntiude': df['RX Magnitude'].to_numpy()[:n_out],
     })
 
     if out_path is None:
         out_path = csv_path.rsplit(".", 1)[0] + "_clean_noisy.csv"
     out_df.to_csv(out_path, index=False)
     print(f"[INFO] wrote {out_path}")
+
+    # --- confirm the rebuilt file covers the same length of time as the input ---
+    if real_time is not None:
+        orig_span = float(real_time[-1] - real_time[0])          # full input capture
+        written = pd.read_csv(out_path, usecols=["Time"])["Time"]  # re-read from disk
+        new_span = float(written.iloc[-1] - written.iloc[0])
+        delta = abs(orig_span - new_span)
+        match = delta < 1e-6
+        print(f"[CHECK] input   {os.path.basename(csv_path)}: {len(real_time)} rows, "
+              f"span {orig_span:.6f} s ({orig_span / 60:.4f} min)")
+        print(f"[CHECK] rebuilt {os.path.basename(out_path)}: {len(written)} rows, "
+              f"span {new_span:.6f} s ({new_span / 60:.4f} min)")
+        print(f"[CHECK] same length of time: {match}  (|delta| = {delta:.2e} s)")
+        if not match:
+            print("[CHECK] WARNING: rebuilt file does NOT span the same time as the input "
+                  "(likely a TX/RX length mismatch truncated the output).")
+        if result["n_segments"] > 1 and result["segments"] is not None:
+            gaps = [real_time[s1] - real_time[e0 - 1]
+                    for (_s0, e0), (s1, _e1) in zip(result["segments"][:-1], result["segments"][1:])]
+            print(f"[CHECK] {result['n_segments']} segments, {len(gaps)} inter-segment dead "
+                  f"gaps retained in 'Time' (each {min(gaps):.2f}-{max(gaps):.2f} s, "
+                  f"{sum(gaps):.2f} s total dead time)")
+    else:
+        print("[CHECK] no timestamp column in input -- real-time span cannot be verified.")
+
+    # --- companion file: dead gaps filled with explicit zero rows for plotting ---
+    # Does NOT touch out_path above; writes a separate *_gapfilled.csv.
+    if real_time is not None and result["n_segments"] > 1 and result["segments"] is not None:
+        gf_df, n_filler = build_gap_filled(out_df, result["segments"])
+        gf_path = out_path.rsplit(".", 1)[0] + "_gapfilled.csv"
+        gf_df.to_csv(gf_path, index=False)
+        print(f"[INFO] wrote {gf_path}")
+
+        gf_written = pd.read_csv(gf_path, usecols=["Time"])["Time"]
+        gf_span = float(gf_written.iloc[-1] - gf_written.iloc[0])
+        gf_delta = abs(orig_span - gf_span)
+        print(f"[CHECK] gapfilled {os.path.basename(gf_path)}: {len(gf_written)} rows "
+              f"({n_filler} zero filler rows added), span {gf_span:.6f} s "
+              f"({gf_span / 60:.4f} min)")
+        print(f"[CHECK] same length of time as input: {gf_delta < 1e-6}  "
+              f"(|delta| = {gf_delta:.2e} s)")
+    else:
+        print("[INFO] no inter-segment gaps to fill -- skipping *_gapfilled.csv")
 
     return result, out_df
 

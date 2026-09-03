@@ -200,3 +200,16 @@ RL-EnvConfig/models/sac_checkpoint*
 RL-EnvConfig/*.png
 *.csv
 *.png
+models/ckpt*
+models/recent_*
+paper-notes/item1_flight_signal_description.md
+paper-notes/item3_signal_comparison.md
+paper-notes/item4_reward_weights.md
+paper-notes/item7_pfn_noise_model.md
+paper-notes/item10_static_filter_baseline.md
+paper-notes/OPEN_QUESTIONS.md
+paper-notes/README.md
+Scripts/Data-Plotting/plot_clean_noisy_gaps.py
+RL-EnvConfig/test_accurate_noise.py
+RL-EnvConfig/test_accurate_flight_noise.py
+RL-EnvConfig/run_reward_weight_analysis.py
